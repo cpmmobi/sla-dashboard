@@ -1,0 +1,55 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Admin {
+  id          String   @id @default(cuid())
+  username    String   @unique
+  password    String
+  displayName String
+  role        String   @default("super_admin")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Customer {
+  id                  String   @id @default(cuid())
+  name                String
+  authCode            String   @unique
+  domain              String
+  domainsJson         String   @default("[]")
+  status              String
+  timezone            String
+  contact             String
+  notes               String
+  accountManagerEmail String?
+  renewalDay          Int?
+  monthlyGiftTrafficGb Float?
+  trafficMarkupPercent Float?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  reportAccessLogs    CustomerReportAccessLog[]
+}
+
+model CustomerReportAccessLog {
+  id           String   @id @default(cuid())
+  customerId   String
+  ipAddress    String
+  userAgent    String?
+  accessedAt   DateTime @default(now())
+  viewedByAdminAt DateTime?
+  customer     Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, accessedAt])
+  @@index([customerId, viewedByAdminAt])
+}
