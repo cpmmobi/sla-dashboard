@@ -106,8 +106,8 @@ export function CustomerAuthForm({
 export function AdminLoginForm({ locale }: { locale: Locale }) {
   const router = useRouter();
   const t = getTranslations(locale);
-  const [username, setUsername] = useState("admin@sportliveapi.com");
-  const [password, setPassword] = useState("sportlive123");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
