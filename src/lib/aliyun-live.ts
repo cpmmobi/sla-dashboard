@@ -944,6 +944,65 @@ function generateMockPvUvData(startTime: string, endTime: string) {
   return pvUvDataInfo;
 }
 
+function generateMockRegionalTraffic(startTime: string, endTime: string, locale: Locale): RegionalTrafficSummary[] {
+  const start = new Date(startTime);
+  const end = new Date(endTime);
+  const mockEnd = new Date(MOCK_END_DATE);
+  const actualEnd = end < mockEnd ? end : mockEnd;
+  
+  if (start >= mockEnd) return [];
+  
+  // Calculate total mock traffic bytes for the window
+  const trafficData = generateMockTrafficData(startTime, endTime);
+  const totalTrafficBytes = trafficData.reduce((sum, item) => sum + Number(item.trafficValue), 0);
+  
+  // Distribute across regions:
+  // AP1 (亚太1区): ~92%
+  // AP2 (亚太2区): ~3%
+  // AP3 (亚太3区): ~2%
+  // CN (中国内地): 0% (As requested by user: 不存在大陆流量)
+  // MEA, NA, SA, EU: ~3% combined
+  
+  const regions = [
+    { code: "ap-southeast-1", share: 0.925 },
+    { code: "ap-southeast-2", share: 0.03 },
+    { code: "ap-southeast-3", share: 0.015 },
+    { code: "cn-shanghai", share: 0 },
+    { code: "me-east-1", share: 0.01 },
+    { code: "eu-central-1", share: 0.01 },
+    { code: "us-east-1", share: 0.01 }
+  ];
+  
+  return ALIYUN_TRAFFIC_AREAS.map((area, sortOrder) => {
+    let areaShare = 0;
+    
+    if (area.code === "AP1") {
+      areaShare = 0.925;
+    } else if (area.code === "AP2") {
+      areaShare = 0.03;
+    } else if (area.code === "AP3") {
+      areaShare = 0.015;
+    } else if (area.code === "CN") {
+      areaShare = 0;
+    } else {
+      areaShare = 0.03 / 4; // Distribute remaining to other regions
+    }
+    
+    // Add slight random noise to shares to make it look organic (except for CN which stays 0)
+    if (areaShare > 0) {
+       const noise = (Math.random() - 0.5) * (areaShare * 0.05); // +/- 2.5% relative variation
+       areaShare += noise;
+    }
+
+    return {
+      code: area.code,
+      label: area.label[locale],
+      trafficBytes: totalTrafficBytes * areaShare,
+      sortOrder,
+    } satisfies RegionalTrafficSummary;
+  });
+}
+
 export async function fetchLiveDomainReportResult(
   domain: string,
   filters: ReportFilters,
@@ -985,7 +1044,7 @@ export async function fetchLiveDomainReportResult(
 
   try {
     const shouldFetchRegionalTraffic = (filters.queryType ?? "traffic") === "traffic";
-    const [trafficResponse, bandwidthResponse, pvUvResponse, regionalTrafficSummaries] = await Promise.all([
+    const [trafficResponse, bandwidthResponse, pvUvResponse, regionalTrafficSummariesRaw] = await Promise.all([
       withAliyunRetry("traffic", requestDebug, () =>
         useLocationFilter
           ? client.describeLiveDomainTrafficData(
@@ -1060,6 +1119,28 @@ export async function fetchLiveDomainReportResult(
           )
         : Promise.resolve([] as RegionalTrafficSummary[]),
     ]);
+
+    let regionalTrafficSummaries = regionalTrafficSummariesRaw;
+    if (domain.includes("fpmn.sla.homes") && isMockDateRange(window.startTime, window.endTime) && shouldFetchRegionalTraffic) {
+       const mockRegionData = generateMockRegionalTraffic(window.startTime, window.endTime, locale);
+       if (mockRegionData.length > 0) {
+         if (new Date(window.endTime) > new Date(MOCK_END_DATE)) {
+           // If overlapping, combine real and mock regional data
+           regionalTrafficSummaries = ALIYUN_TRAFFIC_AREAS.map((area, sortOrder) => {
+             const mockItem = mockRegionData.find(m => m.code === area.code);
+             const realItem = regionalTrafficSummariesRaw.find(m => m.code === area.code);
+             return {
+               code: area.code,
+               label: area.label[locale],
+               trafficBytes: (mockItem?.trafficBytes ?? 0) + (realItem?.trafficBytes ?? 0),
+               sortOrder
+             };
+           });
+         } else {
+           regionalTrafficSummaries = mockRegionData;
+         }
+       }
+    }
 
     const trafficPointsMap = new Map<string, AnalyticsPoint>();
     const bandwidthPointsMap = new Map<string, AnalyticsPoint>();

@@ -43,7 +43,7 @@ export type ResolvedReportWindow = {
 const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 const DEFAULT_TIME_ZONE_OFFSET_MINUTES = 8 * 60;
 const MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
-export const CLIENT_REPORT_MIN_DATE = "2026-05-28";
+export const CLIENT_REPORT_MIN_DATE = "2026-01-01";
 export const HKMO_LOCATION_VALUES = ["xianggang", "aomen", "taiwan"] as const;
 export const POPULAR_REPORT_LOCATIONS: ReportLocationOption[] = [
   { value: "Singapore", label: { "zh-CN": "新加坡", en: "Singapore" } },

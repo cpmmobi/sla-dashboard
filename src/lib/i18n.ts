@@ -332,7 +332,8 @@ const translations = {
       aliyunOnly: "仅展示阿里云真实数据",
       noDataTitle: "当前筛选暂无阿里云数据",
       noDataDescription: "请确认域名、时间段和区域是否正确，或稍后重试。",
-      clientAvailabilityNotice: (date: string) => `提示：客户流量报表仅支持查询 ${date} 及之后的数据。`,
+      clientAvailabilityNotice: (date: string) =>
+        `提示：报表系统已升级，为您提供自 ${date} 起的历史流量重构及当前实时数据查询。`,
       clientSecurityNotice:
         "提示：如需减少盗链带来的无效流量与费用，请联系 SLA 团队开启 HTTP Refer 防盗链，并仅对白名单目标用户区域开放访问。",
       selectedRange: (from: string, to: string) => `${from} - ${to}`,
@@ -732,7 +733,7 @@ const translations = {
       noDataTitle: "No Alibaba Cloud data for the current filters",
       noDataDescription: "Please verify the domain, time range, and region, or try again later.",
       clientAvailabilityNotice: (date: string) =>
-        `Notice: customer traffic reports only support data on or after ${date}.`,
+        `Notice: The reporting system has been upgraded, providing reconstructed historical traffic and real-time data from ${date} onwards.`,
       clientSecurityNotice:
         "Notice: to reduce invalid traffic and costs caused by hotlinking, please contact the SLA team to enable HTTP Referer protection and allow access only for whitelisted target regions.",
       selectedRange: (from: string, to: string) => `${from} - ${to}`,
