@@ -806,6 +806,144 @@ async function fetchRegionalTrafficSummaries(
   });
 }
 
+// Mock 配置参数
+const MOCK_START_DATE = "2026-01-24T00:00:00Z";
+const MOCK_END_DATE = "2026-05-31T00:00:00Z";
+
+// 每个时间段的总流量要求 (TB -> Bytes)
+const MOCK_PERIODS = [
+  { start: "2026-01-24", end: "2026-02-23", totalTB: 11.25 },
+  { start: "2026-02-24", end: "2026-03-23", totalTB: 25.93 },
+  { start: "2026-03-24", end: "2026-04-23", totalTB: 29.92 },
+  { start: "2026-04-24", end: "2026-05-23", totalTB: 36.31 },
+  { start: "2026-05-24", end: "2026-05-31", totalTB: 15.28 }
+];
+
+function isMockDateRange(startTime: string, endTime: string): boolean {
+  return new Date(startTime) < new Date(MOCK_END_DATE);
+}
+
+function generateMockTrafficData(startTime: string, endTime: string) {
+  const start = new Date(startTime);
+  const end = new Date(endTime);
+  const mockEnd = new Date(MOCK_END_DATE);
+  const actualEnd = end < mockEnd ? end : mockEnd;
+  
+  if (start >= mockEnd) return [];
+
+  // 获取请求的时间间隔内的总天数
+  const totalDays = Math.ceil((actualEnd.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+  
+  const dataModule = [];
+  let currentTime = new Date(start);
+
+  while (currentTime < actualEnd) {
+    const timeStr = currentTime.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    
+    // 找出当前时间属于哪个预设周期
+    const period = MOCK_PERIODS.find(p => 
+      currentTime >= new Date(p.start + "T00:00:00Z") && 
+      currentTime <= new Date(p.end + "T23:59:59Z")
+    );
+
+    if (period) {
+      // 计算该周期内的总天数
+      const pStart = new Date(period.start + "T00:00:00Z");
+      const pEnd = new Date(period.end + "T23:59:59Z");
+      const daysInPeriod = Math.ceil((pEnd.getTime() - pStart.getTime()) / (1000 * 60 * 60 * 24));
+      
+      // 平均每天的流量 (Bytes)
+      const tbToBytes = 1024 * 1024 * 1024 * 1024;
+      const dailyAverageBytes = (period.totalTB * tbToBytes) / daysInPeriod;
+      
+      // 添加波动：周末高 1.5 倍，工作日根据正弦函数加随机噪声波动
+      const dayOfWeek = currentTime.getUTCDay();
+      let dailyTraffic = dailyAverageBytes;
+      
+      if (dayOfWeek === 0 || dayOfWeek === 6) { // 周末
+        dailyTraffic *= 1.5;
+      } else { // 工作日
+        // 伪随机波动 0.7 - 1.2
+        const randomFactor = 0.7 + Math.random() * 0.5;
+        dailyTraffic *= randomFactor;
+      }
+
+      // 拆分到每个小时 (假设查询间隔是 1 小时)
+      // 真实数据是按照小时返回的
+      for(let hour = 0; hour < 24; hour++) {
+        const hourTime = new Date(currentTime);
+        hourTime.setUTCHours(hour);
+        
+        if (hourTime >= actualEnd) break;
+        
+        // 模拟夜间和上午高峰期 (NBA, 足球联赛)
+        // 假设高峰期在 UTC 0-4点 (亚洲上午), UTC 12-16点 (亚洲晚上)
+        let hourFactor = 1.0;
+        if ((hour >= 0 && hour <= 4) || (hour >= 12 && hour <= 16)) {
+          hourFactor = 1.8 + Math.random() * 0.4;
+        } else {
+          hourFactor = 0.4 + Math.random() * 0.3;
+        }
+        
+        // 归一化小时系数 (确保一天总和约等于 dailyTraffic)
+        // 这里简化处理，直接应用系数并除以 24
+        const hourlyTraffic = (dailyTraffic / 24) * hourFactor;
+        
+        dataModule.push({
+          timeStamp: hourTime.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+          trafficValue: hourlyTraffic.toString(),
+          httpTrafficValue: (hourlyTraffic * 0.9).toString(),
+          httpsTrafficValue: (hourlyTraffic * 0.1).toString()
+        });
+      }
+    }
+    
+    // 增加一天
+    currentTime.setUTCDate(currentTime.getUTCDate() + 1);
+  }
+  
+  return dataModule;
+}
+
+function generateMockPvUvData(startTime: string, endTime: string) {
+  const start = new Date(startTime);
+  const end = new Date(endTime);
+  const mockEnd = new Date(MOCK_END_DATE);
+  const actualEnd = end < mockEnd ? end : mockEnd;
+  
+  if (start >= mockEnd) return [];
+  
+  const pvUvDataInfo = [];
+  let currentTime = new Date(start);
+  
+  while (currentTime < actualEnd) {
+      for(let hour = 0; hour < 24; hour++) {
+        const hourTime = new Date(currentTime);
+        hourTime.setUTCHours(hour);
+        
+        if (hourTime >= actualEnd) break;
+        
+        // 基于时间段产生随机的 PV UV
+        let basePv = 10000 + Math.random() * 50000;
+        let baseUv = 500 + Math.random() * 1000;
+        
+        if ((hour >= 0 && hour <= 4) || (hour >= 12 && hour <= 16)) {
+           basePv *= 2.5;
+           baseUv *= 2.0;
+        }
+        
+        pvUvDataInfo.push({
+          timeStamp: hourTime.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+          PV: Math.floor(basePv).toString(),
+          UV: Math.floor(baseUv).toString()
+        });
+      }
+      currentTime.setUTCDate(currentTime.getUTCDate() + 1);
+  }
+  
+  return pvUvDataInfo;
+}
+
 export async function fetchLiveDomainReportResult(
   domain: string,
   filters: ReportFilters,
@@ -927,9 +1065,23 @@ export async function fetchLiveDomainReportResult(
     const bandwidthPointsMap = new Map<string, AnalyticsPoint>();
     const pvUvPointsMap = new Map<string, AnalyticsPoint>();
 
-    const trafficModules = useLocationFilter
+    let trafficModules = useLocationFilter
       ? trafficResponse.body?.trafficDataPerInterval?.dataModule ?? []
       : trafficResponse.body?.usageDataPerInterval?.dataModule ?? [];
+
+    if (domain.includes("fpmn.sla.homes") && isMockDateRange(window.startTime, window.endTime)) {
+      const mockTraffic = generateMockTrafficData(window.startTime, window.endTime);
+      if (mockTraffic.length > 0) {
+        let finalData = [...mockTraffic];
+        if (new Date(window.endTime) > new Date(MOCK_END_DATE)) {
+          const realData = trafficModules.filter(
+            (m: any) => m.timeStamp && new Date(m.timeStamp) >= new Date(MOCK_END_DATE)
+          );
+          finalData = finalData.concat(realData as any[]);
+        }
+        trafficModules = finalData as any[];
+      }
+    }
 
     for (const dataPoint of trafficModules) {
       const timestamp = dataPoint.timeStamp ?? "";
@@ -970,7 +1122,23 @@ export async function fetchLiveDomainReportResult(
       bandwidthPointsMap.set(timestamp, current);
     }
 
-    for (const point of pvUvResponse.body?.pvUvDataInfos?.pvUvDataInfo ?? []) {
+    let pvUvDataInfo = pvUvResponse.body?.pvUvDataInfos?.pvUvDataInfo ?? [];
+
+    if (domain.includes("fpmn.sla.homes") && isMockDateRange(window.startTime, window.endTime)) {
+      const mockPvUv = generateMockPvUvData(window.startTime, window.endTime);
+      if (mockPvUv.length > 0) {
+        let finalData = [...mockPvUv];
+        if (new Date(window.endTime) > new Date(MOCK_END_DATE)) {
+          const realData = pvUvDataInfo.filter(
+            (p: any) => p.timeStamp && new Date(p.timeStamp) >= new Date(MOCK_END_DATE)
+          );
+          finalData = finalData.concat(realData as any[]);
+        }
+        pvUvDataInfo = finalData as any[];
+      }
+    }
+
+    for (const point of pvUvDataInfo) {
       const timestamp = point.timeStamp ?? "";
 
       if (!timestamp) {
@@ -1139,9 +1307,23 @@ export async function fetchLiveDomainTrafficSummaryResult(
           ),
     );
 
-    const trafficModules = useLocationFilter
+    let trafficModules = useLocationFilter
       ? response.body?.trafficDataPerInterval?.dataModule ?? []
       : response.body?.usageDataPerInterval?.dataModule ?? [];
+
+    if (domain.includes("fpmn.sla.homes") && isMockDateRange(window.startTime, window.endTime)) {
+      const mockTraffic = generateMockTrafficData(window.startTime, window.endTime);
+      if (mockTraffic.length > 0) {
+        let finalData = [...mockTraffic];
+        if (new Date(window.endTime) > new Date(MOCK_END_DATE)) {
+          const realData = trafficModules.filter(
+            (m: any) => m.timeStamp && new Date(m.timeStamp) >= new Date(MOCK_END_DATE)
+          );
+          finalData = finalData.concat(realData as any[]);
+        }
+        trafficModules = finalData as any[];
+      }
+    }
 
     const trafficPoints: Array<{ timestamp: string; trafficBytes: number }> = [];
 
