@@ -12,6 +12,7 @@ import { getTranslations, Locale } from "@/lib/i18n";
 import { ALL_CLIENT_DOMAINS } from "@/lib/client-report-constants";
 import type { AdminReportRecord, ClientDashboard } from "@/lib/mock-backend";
 import {
+  CLIENT_REPORT_MIN_DATE,
   defaultReportFilters,
   formatUtcOffset,
   getResolvedReportTimeZone,
@@ -150,7 +151,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
         ? props.records[0]?.domain ?? ""
         : props.dashboard.selectedDomain),
   );
-  const isClientMode = props.mode === "client"; // Client mode flag
+  const isClientMode = props.mode === "client";
 
   const report = useMemo(() => {
     if (props.mode === "client") {
@@ -472,7 +473,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
           {isClientMode ? (
             <div className="overflow-x-auto rounded-[18px] border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-700">
               <div className="space-y-1">
-                <p className="whitespace-nowrap">{t.reports.clientAvailabilityNotice("2026-01-01")}</p>
+                <p className="whitespace-nowrap">{t.reports.clientAvailabilityNotice(CLIENT_REPORT_MIN_DATE)}</p>
                 <p>{t.reports.clientSecurityNotice}</p>
               </div>
             </div>
@@ -634,7 +635,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
                       type="date"
                       value={customRangeDraft.fromDate}
                       onChange={(event) => updateCustomDraft("fromDate", event.target.value)}
-                      min={isClientMode ? "2026-01-01" : undefined}
+                      min={CLIENT_REPORT_MIN_DATE}
                       className={filterFieldClassName}
                     />
                     <input
@@ -651,7 +652,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
                       type="date"
                       value={customRangeDraft.toDate}
                       onChange={(event) => updateCustomDraft("toDate", event.target.value)}
-                      min={isClientMode ? "2026-01-01" : undefined}
+                      min={CLIENT_REPORT_MIN_DATE}
                       className={filterFieldClassName}
                     />
                     <input

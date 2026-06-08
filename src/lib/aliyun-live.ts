@@ -806,220 +806,6 @@ async function fetchRegionalTrafficSummaries(
   });
 }
 
-// Mock 配置参数
-const MOCK_START_DATE = "2026-01-24T00:00:00Z";
-const MOCK_END_DATE = "2026-05-31T00:00:00Z";
-
-// 每个时间段的总流量要求 (TB -> Bytes)
-const MOCK_PERIODS = [
-  { start: "2026-01-24", end: "2026-02-23", totalTB: 11.25 },
-  { start: "2026-02-24", end: "2026-03-23", totalTB: 25.93 },
-  { start: "2026-03-24", end: "2026-04-23", totalTB: 29.92 },
-  { start: "2026-04-24", end: "2026-05-23", totalTB: 36.31 },
-  { start: "2026-05-24", end: "2026-05-31", totalTB: 15.28 }
-];
-
-function isMockDateRange(startTime: string, endTime: string): boolean {
-  return new Date(startTime) < new Date(MOCK_END_DATE);
-}
-
-function generateMockTrafficData(startTime: string, endTime: string) {
-  const start = new Date(startTime);
-  const end = new Date(endTime);
-  const mockEnd = new Date(MOCK_END_DATE);
-  const actualEnd = end < mockEnd ? end : mockEnd;
-  
-  if (start >= mockEnd) return [];
-
-  // 获取请求的时间间隔内的总天数
-  const totalDays = Math.ceil((actualEnd.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
-  
-  const dataModule = [];
-  let currentTime = new Date(start);
-
-  while (currentTime < actualEnd) {
-    const timeStr = currentTime.toISOString().replace(/\.\d{3}Z$/, 'Z');
-    
-    // 找出当前时间属于哪个预设周期
-    const period = MOCK_PERIODS.find(p => 
-      currentTime >= new Date(p.start + "T00:00:00Z") && 
-      currentTime <= new Date(p.end + "T23:59:59Z")
-    );
-
-    if (period) {
-      // 计算该周期内的总天数
-      const pStart = new Date(period.start + "T00:00:00Z");
-      const pEnd = new Date(period.end + "T23:59:59Z");
-      const daysInPeriod = Math.ceil((pEnd.getTime() - pStart.getTime()) / (1000 * 60 * 60 * 24));
-      
-      // 平均每天的流量 (Bytes)
-      const tbToBytes = 1024 * 1024 * 1024 * 1024;
-      const dailyAverageBytes = (period.totalTB * tbToBytes) / daysInPeriod;
-      
-      // 每天分配 1 到 2 个极端高峰小时
-      const peakHours = [];
-      const numPeaks = Math.random() > 0.3 ? 1 : 2; // 70% 概率只有1个高峰，30% 概率2个高峰
-      for (let i = 0; i < numPeaks; i++) {
-         // 高峰通常在半夜 (0-3点) 或者晚上 (12-16点)
-         const isNight = Math.random() > 0.5;
-         if (isNight) {
-            peakHours.push(Math.floor(Math.random() * 4)); // 0, 1, 2, 3
-         } else {
-            peakHours.push(12 + Math.floor(Math.random() * 5)); // 12, 13, 14, 15, 16
-         }
-      }
-
-      // 拆分到每个小时
-      for(let hour = 0; hour < 24; hour++) {
-        const hourTime = new Date(currentTime);
-        hourTime.setUTCHours(hour);
-        
-        if (hourTime >= actualEnd) break;
-        
-        let hourlyTraffic = 0;
-        
-        if (peakHours.includes(hour)) {
-           // 高峰小时分走绝大部分流量 (比如 90% 的日均流量，并带上周末加成)
-           const dayOfWeek = currentTime.getUTCDay();
-           let multiplier = (dayOfWeek === 0 || dayOfWeek === 6) ? 1.5 : (0.8 + Math.random() * 0.4);
-           
-           // 如果有2个高峰，平分这 90%
-           hourlyTraffic = (dailyAverageBytes * 0.9 * multiplier) / numPeaks;
-        } else {
-           // 平峰小时只有极微小的背景流量 (比如日均流量的 0.1% 甚至 0)
-           hourlyTraffic = dailyAverageBytes * (Math.random() * 0.001);
-        }
-        
-        dataModule.push({
-          timeStamp: hourTime.toISOString().replace(/\.\d{3}Z$/, 'Z'),
-          trafficValue: hourlyTraffic.toString(),
-          httpTrafficValue: (hourlyTraffic * 0.9).toString(),
-          httpsTrafficValue: (hourlyTraffic * 0.1).toString()
-        });
-      }
-    }
-    
-    // 增加一天
-    currentTime.setUTCDate(currentTime.getUTCDate() + 1);
-  }
-  
-  return dataModule;
-}
-
-function generateMockPvUvData(startTime: string, endTime: string) {
-  const start = new Date(startTime);
-  const end = new Date(endTime);
-  const mockEnd = new Date(MOCK_END_DATE);
-  const actualEnd = end < mockEnd ? end : mockEnd;
-  
-  if (start >= mockEnd) return [];
-  
-  const pvUvDataInfo = [];
-  let currentTime = new Date(start);
-  
-  while (currentTime < actualEnd) {
-      // 为了让 PV/UV 的高峰和流量高峰对齐，我们用同样的随机种子逻辑（这里简化处理，直接再次随机，但保持极端的波峰波谷比例）
-      const peakHours = [];
-      const numPeaks = Math.random() > 0.3 ? 1 : 2;
-      for (let i = 0; i < numPeaks; i++) {
-         const isNight = Math.random() > 0.5;
-         if (isNight) {
-            peakHours.push(Math.floor(Math.random() * 4));
-         } else {
-            peakHours.push(12 + Math.floor(Math.random() * 5));
-         }
-      }
-
-      for(let hour = 0; hour < 24; hour++) {
-        const hourTime = new Date(currentTime);
-        hourTime.setUTCHours(hour);
-        
-        if (hourTime >= actualEnd) break;
-        
-        let pv = 0;
-        let uv = 0;
-        
-        if (peakHours.includes(hour)) {
-           // 高峰期爆发
-           pv = 50000 + Math.random() * 150000; // 5万 到 20万
-           uv = 1000 + Math.random() * 4000;    // 1千 到 5千
-        } else {
-           // 平峰期几乎没人
-           pv = Math.random() * 500; // 0 到 500
-           uv = Math.random() * 50;  // 0 到 50
-        }
-        
-        pvUvDataInfo.push({
-          timeStamp: hourTime.toISOString().replace(/\.\d{3}Z$/, 'Z'),
-          PV: Math.floor(pv).toString(),
-          UV: Math.floor(uv).toString()
-        });
-      }
-      currentTime.setUTCDate(currentTime.getUTCDate() + 1);
-  }
-  
-  return pvUvDataInfo;
-}
-
-function generateMockRegionalTraffic(startTime: string, endTime: string, locale: Locale): RegionalTrafficSummary[] {
-  const start = new Date(startTime);
-  const end = new Date(endTime);
-  const mockEnd = new Date(MOCK_END_DATE);
-  const actualEnd = end < mockEnd ? end : mockEnd;
-  
-  if (start >= mockEnd) return [];
-  
-  // Calculate total mock traffic bytes for the window
-  const trafficData = generateMockTrafficData(startTime, endTime);
-  const totalTrafficBytes = trafficData.reduce((sum, item) => sum + Number(item.trafficValue), 0);
-  
-  // Distribute across regions:
-  // AP1 (亚太1区): ~92%
-  // AP2 (亚太2区): ~3%
-  // AP3 (亚太3区): ~2%
-  // CN (中国内地): 0% (As requested by user: 不存在大陆流量)
-  // MEA, NA, SA, EU: ~3% combined
-  
-  const regions = [
-    { code: "ap-southeast-1", share: 0.925 },
-    { code: "ap-southeast-2", share: 0.03 },
-    { code: "ap-southeast-3", share: 0.015 },
-    { code: "cn-shanghai", share: 0 },
-    { code: "me-east-1", share: 0.01 },
-    { code: "eu-central-1", share: 0.01 },
-    { code: "us-east-1", share: 0.01 }
-  ];
-  
-  return ALIYUN_TRAFFIC_AREAS.map((area, sortOrder) => {
-    let areaShare = 0;
-    
-    if (area.code === "AP1") {
-      areaShare = 0.925;
-    } else if (area.code === "AP2") {
-      areaShare = 0.03;
-    } else if (area.code === "AP3") {
-      areaShare = 0.015;
-    } else if (area.code === "CN") {
-      areaShare = 0;
-    } else {
-      areaShare = 0.03 / 4; // Distribute remaining to other regions
-    }
-    
-    // Add slight random noise to shares to make it look organic (except for CN which stays 0)
-    if (areaShare > 0) {
-       const noise = (Math.random() - 0.5) * (areaShare * 0.05); // +/- 2.5% relative variation
-       areaShare += noise;
-    }
-
-    return {
-      code: area.code,
-      label: area.label[locale],
-      trafficBytes: totalTrafficBytes * areaShare,
-      sortOrder,
-    } satisfies RegionalTrafficSummary;
-  });
-}
-
 export async function fetchLiveDomainReportResult(
   domain: string,
   filters: ReportFilters,
@@ -1061,7 +847,7 @@ export async function fetchLiveDomainReportResult(
 
   try {
     const shouldFetchRegionalTraffic = (filters.queryType ?? "traffic") === "traffic";
-    const [trafficResponse, bandwidthResponse, pvUvResponse, regionalTrafficSummariesRaw] = await Promise.all([
+    const [trafficResponse, bandwidthResponse, pvUvResponse, regionalTrafficSummaries] = await Promise.all([
       withAliyunRetry("traffic", requestDebug, () =>
         useLocationFilter
           ? client.describeLiveDomainTrafficData(
@@ -1137,49 +923,13 @@ export async function fetchLiveDomainReportResult(
         : Promise.resolve([] as RegionalTrafficSummary[]),
     ]);
 
-    let regionalTrafficSummaries = regionalTrafficSummariesRaw;
-    if (domain.includes("fpmn.sla.homes") && isMockDateRange(window.startTime, window.endTime) && shouldFetchRegionalTraffic) {
-       const mockRegionData = generateMockRegionalTraffic(window.startTime, window.endTime, locale);
-       if (mockRegionData.length > 0) {
-         if (new Date(window.endTime) > new Date(MOCK_END_DATE)) {
-           // If overlapping, combine real and mock regional data
-           regionalTrafficSummaries = ALIYUN_TRAFFIC_AREAS.map((area, sortOrder) => {
-             const mockItem = mockRegionData.find(m => m.code === area.code);
-             const realItem = regionalTrafficSummariesRaw.find(m => m.code === area.code);
-             return {
-               code: area.code,
-               label: area.label[locale],
-               trafficBytes: (mockItem?.trafficBytes ?? 0) + (realItem?.trafficBytes ?? 0),
-               sortOrder
-             };
-           });
-         } else {
-           regionalTrafficSummaries = mockRegionData;
-         }
-       }
-    }
-
     const trafficPointsMap = new Map<string, AnalyticsPoint>();
     const bandwidthPointsMap = new Map<string, AnalyticsPoint>();
     const pvUvPointsMap = new Map<string, AnalyticsPoint>();
 
-    let trafficModules = useLocationFilter
+    const trafficModules = useLocationFilter
       ? trafficResponse.body?.trafficDataPerInterval?.dataModule ?? []
       : trafficResponse.body?.usageDataPerInterval?.dataModule ?? [];
-
-    if (domain.includes("fpmn.sla.homes") && isMockDateRange(window.startTime, window.endTime)) {
-      const mockTraffic = generateMockTrafficData(window.startTime, window.endTime);
-      if (mockTraffic.length > 0) {
-        let finalData = [...mockTraffic];
-        if (new Date(window.endTime) > new Date(MOCK_END_DATE)) {
-          const realData = trafficModules.filter(
-            (m: any) => m.timeStamp && new Date(m.timeStamp) >= new Date(MOCK_END_DATE)
-          );
-          finalData = finalData.concat(realData as any[]);
-        }
-        trafficModules = finalData as any[];
-      }
-    }
 
     for (const dataPoint of trafficModules) {
       const timestamp = dataPoint.timeStamp ?? "";
@@ -1220,23 +970,7 @@ export async function fetchLiveDomainReportResult(
       bandwidthPointsMap.set(timestamp, current);
     }
 
-    let pvUvDataInfo = pvUvResponse.body?.pvUvDataInfos?.pvUvDataInfo ?? [];
-
-    if (domain.includes("fpmn.sla.homes") && isMockDateRange(window.startTime, window.endTime)) {
-      const mockPvUv = generateMockPvUvData(window.startTime, window.endTime);
-      if (mockPvUv.length > 0) {
-        let finalData = [...mockPvUv];
-        if (new Date(window.endTime) > new Date(MOCK_END_DATE)) {
-          const realData = pvUvDataInfo.filter(
-            (p: any) => p.timeStamp && new Date(p.timeStamp) >= new Date(MOCK_END_DATE)
-          );
-          finalData = finalData.concat(realData as any[]);
-        }
-        pvUvDataInfo = finalData as any[];
-      }
-    }
-
-    for (const point of pvUvDataInfo) {
+    for (const point of pvUvResponse.body?.pvUvDataInfos?.pvUvDataInfo ?? []) {
       const timestamp = point.timeStamp ?? "";
 
       if (!timestamp) {
@@ -1405,23 +1139,9 @@ export async function fetchLiveDomainTrafficSummaryResult(
           ),
     );
 
-    let trafficModules = useLocationFilter
+    const trafficModules = useLocationFilter
       ? response.body?.trafficDataPerInterval?.dataModule ?? []
       : response.body?.usageDataPerInterval?.dataModule ?? [];
-
-    if (domain.includes("fpmn.sla.homes") && isMockDateRange(window.startTime, window.endTime)) {
-      const mockTraffic = generateMockTrafficData(window.startTime, window.endTime);
-      if (mockTraffic.length > 0) {
-        let finalData = [...mockTraffic];
-        if (new Date(window.endTime) > new Date(MOCK_END_DATE)) {
-          const realData = trafficModules.filter(
-            (m: any) => m.timeStamp && new Date(m.timeStamp) >= new Date(MOCK_END_DATE)
-          );
-          finalData = finalData.concat(realData as any[]);
-        }
-        trafficModules = finalData as any[];
-      }
-    }
 
     const trafficPoints: Array<{ timestamp: string; trafficBytes: number }> = [];
 
