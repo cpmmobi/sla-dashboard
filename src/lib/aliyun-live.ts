@@ -856,38 +856,39 @@ function generateMockTrafficData(startTime: string, endTime: string) {
       const tbToBytes = 1024 * 1024 * 1024 * 1024;
       const dailyAverageBytes = (period.totalTB * tbToBytes) / daysInPeriod;
       
-      // 添加波动：周末高 1.5 倍，工作日根据正弦函数加随机噪声波动
-      const dayOfWeek = currentTime.getUTCDay();
-      let dailyTraffic = dailyAverageBytes;
-      
-      if (dayOfWeek === 0 || dayOfWeek === 6) { // 周末
-        dailyTraffic *= 1.5;
-      } else { // 工作日
-        // 伪随机波动 0.7 - 1.2
-        const randomFactor = 0.7 + Math.random() * 0.5;
-        dailyTraffic *= randomFactor;
+      // 每天分配 1 到 2 个极端高峰小时
+      const peakHours = [];
+      const numPeaks = Math.random() > 0.3 ? 1 : 2; // 70% 概率只有1个高峰，30% 概率2个高峰
+      for (let i = 0; i < numPeaks; i++) {
+         // 高峰通常在半夜 (0-3点) 或者晚上 (12-16点)
+         const isNight = Math.random() > 0.5;
+         if (isNight) {
+            peakHours.push(Math.floor(Math.random() * 4)); // 0, 1, 2, 3
+         } else {
+            peakHours.push(12 + Math.floor(Math.random() * 5)); // 12, 13, 14, 15, 16
+         }
       }
 
-      // 拆分到每个小时 (假设查询间隔是 1 小时)
-      // 真实数据是按照小时返回的
+      // 拆分到每个小时
       for(let hour = 0; hour < 24; hour++) {
         const hourTime = new Date(currentTime);
         hourTime.setUTCHours(hour);
         
         if (hourTime >= actualEnd) break;
         
-        // 模拟夜间和上午高峰期 (NBA, 足球联赛)
-        // 假设高峰期在 UTC 0-4点 (亚洲上午), UTC 12-16点 (亚洲晚上)
-        let hourFactor = 1.0;
-        if ((hour >= 0 && hour <= 4) || (hour >= 12 && hour <= 16)) {
-          hourFactor = 1.8 + Math.random() * 0.4;
-        } else {
-          hourFactor = 0.4 + Math.random() * 0.3;
-        }
+        let hourlyTraffic = 0;
         
-        // 归一化小时系数 (确保一天总和约等于 dailyTraffic)
-        // 这里简化处理，直接应用系数并除以 24
-        const hourlyTraffic = (dailyTraffic / 24) * hourFactor;
+        if (peakHours.includes(hour)) {
+           // 高峰小时分走绝大部分流量 (比如 90% 的日均流量，并带上周末加成)
+           const dayOfWeek = currentTime.getUTCDay();
+           let multiplier = (dayOfWeek === 0 || dayOfWeek === 6) ? 1.5 : (0.8 + Math.random() * 0.4);
+           
+           // 如果有2个高峰，平分这 90%
+           hourlyTraffic = (dailyAverageBytes * 0.9 * multiplier) / numPeaks;
+        } else {
+           // 平峰小时只有极微小的背景流量 (比如日均流量的 0.1% 甚至 0)
+           hourlyTraffic = dailyAverageBytes * (Math.random() * 0.001);
+        }
         
         dataModule.push({
           timeStamp: hourTime.toISOString().replace(/\.\d{3}Z$/, 'Z'),
@@ -917,25 +918,41 @@ function generateMockPvUvData(startTime: string, endTime: string) {
   let currentTime = new Date(start);
   
   while (currentTime < actualEnd) {
+      // 为了让 PV/UV 的高峰和流量高峰对齐，我们用同样的随机种子逻辑（这里简化处理，直接再次随机，但保持极端的波峰波谷比例）
+      const peakHours = [];
+      const numPeaks = Math.random() > 0.3 ? 1 : 2;
+      for (let i = 0; i < numPeaks; i++) {
+         const isNight = Math.random() > 0.5;
+         if (isNight) {
+            peakHours.push(Math.floor(Math.random() * 4));
+         } else {
+            peakHours.push(12 + Math.floor(Math.random() * 5));
+         }
+      }
+
       for(let hour = 0; hour < 24; hour++) {
         const hourTime = new Date(currentTime);
         hourTime.setUTCHours(hour);
         
         if (hourTime >= actualEnd) break;
         
-        // 基于时间段产生随机的 PV UV
-        let basePv = 10000 + Math.random() * 50000;
-        let baseUv = 500 + Math.random() * 1000;
+        let pv = 0;
+        let uv = 0;
         
-        if ((hour >= 0 && hour <= 4) || (hour >= 12 && hour <= 16)) {
-           basePv *= 2.5;
-           baseUv *= 2.0;
+        if (peakHours.includes(hour)) {
+           // 高峰期爆发
+           pv = 50000 + Math.random() * 150000; // 5万 到 20万
+           uv = 1000 + Math.random() * 4000;    // 1千 到 5千
+        } else {
+           // 平峰期几乎没人
+           pv = Math.random() * 500; // 0 到 500
+           uv = Math.random() * 50;  // 0 到 50
         }
         
         pvUvDataInfo.push({
           timeStamp: hourTime.toISOString().replace(/\.\d{3}Z$/, 'Z'),
-          PV: Math.floor(basePv).toString(),
-          UV: Math.floor(baseUv).toString()
+          PV: Math.floor(pv).toString(),
+          UV: Math.floor(uv).toString()
         });
       }
       currentTime.setUTCDate(currentTime.getUTCDate() + 1);
