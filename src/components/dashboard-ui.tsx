@@ -21,6 +21,7 @@ type DashboardShellProps = {
   activeLabel: string;
   logoutLabel?: string;
   logoutHref?: string;
+  footerContent?: ReactNode;
   children: ReactNode;
 };
 
@@ -47,6 +48,7 @@ type DashboardModalProps = {
   open: boolean;
   onClose: () => void;
   children: ReactNode;
+  maxWidthClassName?: string;
 };
 
 const toneStyles: Record<MetricCardProps["tone"], string> = {
@@ -237,6 +239,7 @@ export function DashboardShell({
   activeLabel,
   logoutLabel,
   logoutHref,
+  footerContent,
   children,
 }: DashboardShellProps) {
   return (
@@ -292,7 +295,10 @@ export function DashboardShell({
           </nav>
 
           <div className="mt-auto flex items-center justify-between gap-3 border-t border-slate-100 pt-4">
-            <LocaleSwitcher locale={locale} />
+            <div className="flex items-center gap-2">
+              <LocaleSwitcher locale={locale} />
+              {footerContent}
+            </div>
             {logoutLabel && logoutHref ? (
               <a
                 href={logoutHref}
@@ -325,13 +331,42 @@ export function DashboardShell({
   );
 }
 
-export function DashboardModal({ open, onClose, children }: DashboardModalProps) {
+export function DashboardModal({
+  open,
+  onClose,
+  children,
+  maxWidthClassName = "max-w-3xl",
+}: DashboardModalProps) {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     setMounted(true);
     return () => setMounted(false);
   }, []);
+
+  useEffect(() => {
+    if (!mounted || !open) {
+      return;
+    }
+
+    const { body, documentElement } = document;
+    const previousBodyOverflow = body.style.overflow;
+    const previousDocumentOverflow = documentElement.style.overflow;
+    const previousBodyOverscrollBehavior = body.style.overscrollBehavior;
+    const previousDocumentOverscrollBehavior = documentElement.style.overscrollBehavior;
+
+    body.style.overflow = "hidden";
+    documentElement.style.overflow = "hidden";
+    body.style.overscrollBehavior = "contain";
+    documentElement.style.overscrollBehavior = "contain";
+
+    return () => {
+      body.style.overflow = previousBodyOverflow;
+      documentElement.style.overflow = previousDocumentOverflow;
+      body.style.overscrollBehavior = previousBodyOverscrollBehavior;
+      documentElement.style.overscrollBehavior = previousDocumentOverscrollBehavior;
+    };
+  }, [mounted, open]);
 
   if (!mounted || !open) {
     return null;
@@ -340,7 +375,7 @@ export function DashboardModal({ open, onClose, children }: DashboardModalProps)
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/18 px-4 py-6 backdrop-blur-[2px]">
       <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
-      <div className="panel relative z-10 max-h-[calc(100vh-3rem)] w-full max-w-3xl overflow-y-auto rounded-[32px] p-5 shadow-2xl shadow-slate-900/12 sm:p-6">
+      <div className={`panel relative z-10 max-h-[calc(100vh-3rem)] w-full ${maxWidthClassName} overflow-y-auto rounded-[32px] p-5 shadow-2xl shadow-slate-900/12 sm:p-6`}>
         {children}
       </div>
     </div>,

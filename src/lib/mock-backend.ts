@@ -72,6 +72,39 @@ export type ManagedAdminAccount = {
   updatedAt: string;
 };
 
+export type AnnouncementStatus = "active" | "scheduled" | "expired" | "disabled";
+
+export type ManagedAnnouncement = {
+  id: string;
+  titleZh: string;
+  titleEn: string;
+  contentZh: string;
+  contentEn: string;
+  startsAt: string | null;
+  endsAt: string | null;
+  enabled: boolean;
+  createdByUsername: string | null;
+  createdAt: string;
+  updatedAt: string;
+  status: AnnouncementStatus;
+};
+
+export type ClientAnnouncement = {
+  id: string;
+  titleZh: string;
+  titleEn: string;
+  contentZh: string;
+  contentEn: string;
+  startsAt: string | null;
+  endsAt: string | null;
+  createdAt: string;
+};
+
+export type ClientAnnouncementView = {
+  announcements: ClientAnnouncement[];
+  initialAnnouncementId: string | null;
+};
+
 export type TrafficBoardPeriod =
   | "cycle"
   | "lastCycle"
@@ -215,6 +248,107 @@ function normalizeTrafficMarkupPercent(value?: number | null): number | null {
   }
 
   return value > 0 ? Number(value.toFixed(2)) : null;
+}
+
+function normalizeAnnouncementText(value?: string | null) {
+  return value?.trim() ?? "";
+}
+
+function normalizeAnnouncementDateTime(value?: string | null) {
+  if (!value?.trim()) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function getAnnouncementStatus(
+  announcement: {
+    enabled: boolean;
+    startsAt: Date | null;
+    endsAt: Date | null;
+  },
+  now = new Date(),
+): AnnouncementStatus {
+  if (!announcement.enabled) {
+    return "disabled";
+  }
+
+  if (announcement.startsAt && announcement.startsAt.getTime() > now.getTime()) {
+    return "scheduled";
+  }
+
+  if (announcement.endsAt && announcement.endsAt.getTime() < now.getTime()) {
+    return "expired";
+  }
+
+  return "active";
+}
+
+function isAnnouncementActive(
+  announcement: {
+    enabled: boolean;
+    startsAt: Date | null;
+    endsAt: Date | null;
+  },
+  now = new Date(),
+) {
+  return getAnnouncementStatus(announcement, now) === "active";
+}
+
+function toManagedAnnouncement(
+  announcement: {
+    id: string;
+    titleZh: string;
+    titleEn: string;
+    contentZh: string;
+    contentEn: string;
+    startsAt: Date | null;
+    endsAt: Date | null;
+    enabled: boolean;
+    createdByUsername: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  },
+  now = new Date(),
+): ManagedAnnouncement {
+  return {
+    id: announcement.id,
+    titleZh: announcement.titleZh,
+    titleEn: announcement.titleEn,
+    contentZh: announcement.contentZh,
+    contentEn: announcement.contentEn,
+    startsAt: announcement.startsAt?.toISOString() ?? null,
+    endsAt: announcement.endsAt?.toISOString() ?? null,
+    enabled: announcement.enabled,
+    createdByUsername: announcement.createdByUsername,
+    createdAt: announcement.createdAt.toISOString(),
+    updatedAt: announcement.updatedAt.toISOString(),
+    status: getAnnouncementStatus(announcement, now),
+  };
+}
+
+function toClientAnnouncement(announcement: {
+  id: string;
+  titleZh: string;
+  titleEn: string;
+  contentZh: string;
+  contentEn: string;
+  startsAt: Date | null;
+  endsAt: Date | null;
+  createdAt: Date;
+}): ClientAnnouncement {
+  return {
+    id: announcement.id,
+    titleZh: announcement.titleZh,
+    titleEn: announcement.titleEn,
+    contentZh: announcement.contentZh,
+    contentEn: announcement.contentEn,
+    startsAt: announcement.startsAt?.toISOString() ?? null,
+    endsAt: announcement.endsAt?.toISOString() ?? null,
+    createdAt: announcement.createdAt.toISOString(),
+  };
 }
 
 function isSuperAdmin(adminSession: AdminSession) {
@@ -2038,6 +2172,209 @@ export async function getCustomerReportAccessLogs(
     accessedAt: formatAdminAccessLogDate(log.accessedAt, locale),
     viewedByAdmin: Boolean(log.viewedByAdminAt),
   }));
+}
+
+export async function getManagedAnnouncements(
+  _adminSession: AdminSession,
+): Promise<ManagedAnnouncement[]> {
+  void _adminSession;
+
+  const announcements = await prisma.announcement.findMany({
+    orderBy: [{ createdAt: "desc" }],
+  });
+
+  return announcements.map((announcement) => toManagedAnnouncement(announcement));
+}
+
+export async function createAnnouncement(input: {
+  adminSession: AdminSession;
+  titleZh: string;
+  titleEn: string;
+  contentZh: string;
+  contentEn: string;
+  startsAt?: string | null;
+  endsAt?: string | null;
+  enabled?: boolean;
+}) {
+  const titleZh = normalizeAnnouncementText(input.titleZh);
+  const titleEn = normalizeAnnouncementText(input.titleEn);
+  const contentZh = normalizeAnnouncementText(input.contentZh);
+  const contentEn = normalizeAnnouncementText(input.contentEn);
+  const startsAt = normalizeAnnouncementDateTime(input.startsAt);
+  const endsAt = normalizeAnnouncementDateTime(input.endsAt);
+
+  if (!titleZh || !titleEn || !contentZh || !contentEn) {
+    throw new Error("ANNOUNCEMENT_REQUIRED_FIELDS");
+  }
+
+  if (startsAt && endsAt && startsAt.getTime() > endsAt.getTime()) {
+    throw new Error("ANNOUNCEMENT_INVALID_RANGE");
+  }
+
+  const announcement = await prisma.announcement.create({
+    data: {
+      titleZh,
+      titleEn,
+      contentZh,
+      contentEn,
+      startsAt,
+      endsAt,
+      enabled: input.enabled ?? true,
+      createdByUsername: input.adminSession.username,
+    },
+  });
+
+  return toManagedAnnouncement(announcement);
+}
+
+export async function updateAnnouncement(
+  id: string,
+  input: {
+    adminSession: AdminSession;
+    titleZh: string;
+    titleEn: string;
+    contentZh: string;
+    contentEn: string;
+    startsAt?: string | null;
+    endsAt?: string | null;
+    enabled?: boolean;
+  },
+) {
+  const titleZh = normalizeAnnouncementText(input.titleZh);
+  const titleEn = normalizeAnnouncementText(input.titleEn);
+  const contentZh = normalizeAnnouncementText(input.contentZh);
+  const contentEn = normalizeAnnouncementText(input.contentEn);
+  const startsAt = normalizeAnnouncementDateTime(input.startsAt);
+  const endsAt = normalizeAnnouncementDateTime(input.endsAt);
+
+  if (!titleZh || !titleEn || !contentZh || !contentEn) {
+    throw new Error("ANNOUNCEMENT_REQUIRED_FIELDS");
+  }
+
+  if (startsAt && endsAt && startsAt.getTime() > endsAt.getTime()) {
+    throw new Error("ANNOUNCEMENT_INVALID_RANGE");
+  }
+
+  const existingAnnouncement = await prisma.announcement.findUnique({
+    where: { id },
+  });
+
+  if (!existingAnnouncement) {
+    throw new Error("ANNOUNCEMENT_NOT_FOUND");
+  }
+
+  const announcement = await prisma.announcement.update({
+    where: { id },
+    data: {
+      titleZh,
+      titleEn,
+      contentZh,
+      contentEn,
+      startsAt,
+      endsAt,
+      enabled: input.enabled ?? true,
+    },
+  });
+
+  return toManagedAnnouncement(announcement);
+}
+
+export async function deleteAnnouncement(id: string, _adminSession: AdminSession) {
+  void _adminSession;
+
+  const existingAnnouncement = await prisma.announcement.findUnique({
+    where: { id },
+  });
+
+  if (!existingAnnouncement) {
+    throw new Error("ANNOUNCEMENT_NOT_FOUND");
+  }
+
+  const announcement = await prisma.announcement.delete({
+    where: { id },
+  });
+
+  return toManagedAnnouncement(announcement);
+}
+
+export async function getClientAnnouncementView(
+  ipAddress: string,
+  now = new Date(),
+): Promise<ClientAnnouncementView> {
+  const normalizedIpAddress = ipAddress.trim();
+  const announcements = await prisma.announcement.findMany({
+    where: {
+      enabled: true,
+    },
+    orderBy: [{ createdAt: "desc" }],
+  });
+
+  const activeAnnouncements = announcements.filter((announcement) => isAnnouncementActive(announcement, now));
+
+  if (activeAnnouncements.length === 0) {
+    return {
+      announcements: [],
+      initialAnnouncementId: null,
+    };
+  }
+
+  let dismissedAnnouncementIds = new Set<string>();
+
+  if (normalizedIpAddress) {
+    const dismissals = await prisma.announcementDismissal.findMany({
+      where: {
+        ipAddress: normalizedIpAddress,
+        announcementId: {
+          in: activeAnnouncements.map((announcement) => announcement.id),
+        },
+      },
+      select: {
+        announcementId: true,
+      },
+    });
+
+    dismissedAnnouncementIds = new Set(dismissals.map((item) => item.announcementId));
+  }
+
+  return {
+    announcements: activeAnnouncements.map((announcement) => toClientAnnouncement(announcement)),
+    initialAnnouncementId:
+      activeAnnouncements.find((announcement) => !dismissedAnnouncementIds.has(announcement.id))?.id ?? null,
+  };
+}
+
+export async function dismissAnnouncementForIp(input: {
+  announcementId: string;
+  ipAddress: string;
+}) {
+  const ipAddress = input.ipAddress.trim();
+  if (!ipAddress) {
+    return null;
+  }
+
+  const existingAnnouncement = await prisma.announcement.findUnique({
+    where: { id: input.announcementId },
+  });
+
+  if (!existingAnnouncement) {
+    throw new Error("ANNOUNCEMENT_NOT_FOUND");
+  }
+
+  return prisma.announcementDismissal.upsert({
+    where: {
+      announcementId_ipAddress: {
+        announcementId: input.announcementId,
+        ipAddress,
+      },
+    },
+    update: {
+      dismissedAt: new Date(),
+    },
+    create: {
+      announcementId: input.announcementId,
+      ipAddress,
+    },
+  });
 }
 
 export async function getAdminView(locale: Locale, adminSession: AdminSession) {

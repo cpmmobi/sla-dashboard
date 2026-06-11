@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import {
   DataTable,
   MetricCard,
@@ -98,6 +98,8 @@ export function TrafficReportView(props: TrafficReportViewProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const searchParamsString = searchParams.toString();
+  const [isPending, startTransition] = useTransition();
   const filterTimeZone = getResolvedReportTimeZone(props.filters);
   const filterTimeZoneOffsetMinutes = getResolvedReportTimeZoneOffsetMinutes(props.filters);
   const [queryType, setQueryType] = useState<ReportQueryType>(
@@ -151,6 +153,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
         ? props.records[0]?.domain ?? ""
         : props.dashboard.selectedDomain),
   );
+  const [pendingQuery, setPendingQuery] = useState<string | null>(null);
   const isClientMode = props.mode === "client";
 
   const report = useMemo(() => {
@@ -196,7 +199,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
         ? [ALL_CLIENT_DOMAINS, ...props.dashboard.availableDomains]
         : props.dashboard.availableDomains;
 
-  const replaceParams = useCallback((patch: Record<string, string | undefined>) => {
+  const replaceParams = useCallback((patch: Record<string, string | undefined>, trackPending = false) => {
     const params = new URLSearchParams(searchParams.toString());
     const mergedPatch = {
       tz: browserTimeZone,
@@ -212,8 +215,26 @@ export function TrafficReportView(props: TrafficReportViewProps) {
       }
     });
 
-    router.replace(`${pathname}?${params.toString()}`);
-  }, [browserTimeZone, browserTimeZoneOffsetMinutes, pathname, router, searchParams]);
+    const nextQuery = params.toString();
+
+    if (trackPending) {
+      setPendingQuery(nextQuery);
+    }
+
+    startTransition(() => {
+      router.replace(`${pathname}?${nextQuery}`);
+    });
+  }, [browserTimeZone, browserTimeZoneOffsetMinutes, pathname, router, searchParams, startTransition]);
+
+  useEffect(() => {
+    if (!pendingQuery) {
+      return;
+    }
+
+    if (searchParamsString === pendingQuery) {
+      setPendingQuery(null);
+    }
+  }, [pendingQuery, searchParamsString]);
 
   useEffect(() => {
     let detectedTimeZone = filterTimeZone;
@@ -294,6 +315,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
     queryType === "traffic"
       ? hasTrafficData || hasTrafficUsageRows
       : hasAudienceData || hasAudienceUsageRows;
+  const isQuerying = isPending || pendingQuery !== null;
   const regionSummaryLabel = useMemo(() => {
     if (selectedLocations.length > 0) {
       if (selectedLocations.length === 1) {
@@ -399,7 +421,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
       range: normalizedFilters.timeRange,
       from: normalizedFilters.timeRange === "custom" ? normalizedFilters.from : undefined,
       to: normalizedFilters.timeRange === "custom" ? normalizedFilters.to : undefined,
-    });
+    }, true);
   }
 
   function cancelCustomRange() {
@@ -421,7 +443,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
           : undefined,
       customerId: props.mode === "admin" ? selectedCustomerId || undefined : undefined,
       domain: selectedDomain || undefined,
-    });
+    }, true);
   }
 
   function applyRegionPreset(nextRegion: Exclude<RegionKey, "custom">) {
@@ -470,14 +492,6 @@ export function TrafficReportView(props: TrafficReportViewProps) {
         title={t.reports.reportTitle}
       >
         <div className="space-y-4">
-          {isClientMode ? (
-            <div className="overflow-x-auto rounded-[18px] border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-700">
-              <div className="space-y-1">
-                <p className="whitespace-nowrap">{t.reports.clientAvailabilityNotice(CLIENT_REPORT_MIN_DATE)}</p>
-                <p>{t.reports.clientSecurityNotice}</p>
-              </div>
-            </div>
-          ) : null}
           {reportNotice ? (
             <div className="rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
               {reportNotice}
@@ -616,9 +630,29 @@ export function TrafficReportView(props: TrafficReportViewProps) {
                   <button
                     type="button"
                     onClick={applyFilters}
-                    className="rounded-2xl bg-gradient-to-r from-rose-500 to-orange-400 px-5 py-3 text-sm font-medium text-white shadow-lg shadow-rose-200 transition hover:brightness-110"
+                    disabled={isQuerying}
+                    className={`rounded-2xl px-5 py-3 text-sm font-medium text-white shadow-lg shadow-rose-200 transition ${
+                      isQuerying
+                        ? "cursor-wait bg-gradient-to-r from-rose-400 to-orange-400 opacity-90"
+                        : "bg-gradient-to-r from-rose-500 to-orange-400 hover:brightness-110"
+                    }`}
                   >
-                    {t.reports.search}
+                    <span className="inline-flex items-center gap-2">
+                      {isQuerying ? (
+                        <span className="flex items-center gap-1.5" aria-hidden="true">
+                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/90" />
+                          <span
+                            className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/75"
+                            style={{ animationDelay: "120ms" }}
+                          />
+                          <span
+                            className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/60"
+                            style={{ animationDelay: "240ms" }}
+                          />
+                        </span>
+                      ) : null}
+                      <span>{isQuerying ? t.reports.searching : t.reports.search}</span>
+                    </span>
                   </button>
                 </div>
               </div>
@@ -674,9 +708,29 @@ export function TrafficReportView(props: TrafficReportViewProps) {
                   <button
                     type="button"
                     onClick={applyCustomRange}
-                    className="rounded-2xl bg-gradient-to-r from-rose-500 to-orange-400 px-4 py-3 text-sm font-medium text-white shadow-lg shadow-rose-200 transition hover:brightness-110"
+                    disabled={isQuerying}
+                    className={`rounded-2xl px-4 py-3 text-sm font-medium text-white shadow-lg shadow-rose-200 transition ${
+                      isQuerying
+                        ? "cursor-wait bg-gradient-to-r from-rose-400 to-orange-400 opacity-90"
+                        : "bg-gradient-to-r from-rose-500 to-orange-400 hover:brightness-110"
+                    }`}
                   >
-                    {t.reports.confirm}
+                    <span className="inline-flex items-center gap-2">
+                      {isQuerying ? (
+                        <span className="flex items-center gap-1.5" aria-hidden="true">
+                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/90" />
+                          <span
+                            className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/75"
+                            style={{ animationDelay: "120ms" }}
+                          />
+                          <span
+                            className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/60"
+                            style={{ animationDelay: "240ms" }}
+                          />
+                        </span>
+                      ) : null}
+                      <span>{isQuerying ? t.reports.searching : t.reports.confirm}</span>
+                    </span>
                   </button>
                 </div>
               </div>
@@ -684,6 +738,25 @@ export function TrafficReportView(props: TrafficReportViewProps) {
           ) : null}
         </div>
       </Panel>
+
+      {isQuerying ? (
+        <div className="rounded-[18px] border border-rose-200 bg-gradient-to-r from-rose-50 to-orange-50 px-4 py-3 text-sm text-rose-700 shadow-sm shadow-rose-100">
+          <div className="flex items-center gap-2">
+            <span className="flex items-center gap-1.5" aria-hidden="true">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-rose-500" />
+              <span
+                className="h-1.5 w-1.5 animate-pulse rounded-full bg-orange-400"
+                style={{ animationDelay: "120ms" }}
+              />
+              <span
+                className="h-1.5 w-1.5 animate-pulse rounded-full bg-rose-300"
+                style={{ animationDelay: "240ms" }}
+              />
+            </span>
+            <span>{t.reports.searchingNotice}</span>
+          </div>
+        </div>
+      ) : null}
 
       {isRegionMenuOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/18 px-4 py-6 backdrop-blur-[2px]">
@@ -828,237 +901,239 @@ export function TrafficReportView(props: TrafficReportViewProps) {
         </div>
       ) : null}
 
-      <section className={`grid gap-3 md:grid-cols-2 ${metricGridClassName}`}>
-        {(queryType === "traffic" ? trafficCards : audienceCards).map((metric) => (
-          <MetricCard key={metric.label} compact {...metric} />
-        ))}
-      </section>
-
-      {!hasCurrentData ? (
-        <section className="rounded-[24px] border border-dashed border-slate-300 bg-slate-50/70 px-5 py-8 text-center">
-          <p className="text-sm font-semibold text-slate-900">{t.reports.noDataTitle}</p>
-          <p className="mt-2 text-sm text-slate-500">{t.reports.noDataDescription}</p>
+      <div className={`space-y-4 transition-opacity ${isQuerying ? "opacity-60" : "opacity-100"}`}>
+        <section className={`grid gap-3 md:grid-cols-2 ${metricGridClassName}`}>
+          {(queryType === "traffic" ? trafficCards : audienceCards).map((metric) => (
+            <MetricCard key={metric.label} compact {...metric} />
+          ))}
         </section>
-      ) : null}
 
-      {queryType === "traffic" ? (
-        <>
-          <section>
-            <Panel
-              compact
-              title={
-                trafficChartView === "traffic"
-                  ? t.reports.trafficTitle
-                  : t.reports.bandwidthTitle
-              }
-              aside={
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-1">
-                  {(["traffic", "bandwidth"] as const).map((view) => {
-                    const active = trafficChartView === view;
-
-                    return (
-                      <button
-                        key={view}
-                        type="button"
-                        onClick={() => setTrafficChartView(view)}
-                        className={`rounded-xl px-3 py-1.5 text-xs font-medium transition ${
-                          active
-                            ? "bg-white text-slate-950 shadow-sm"
-                            : "text-slate-500 hover:text-slate-900"
-                        }`}
-                      >
-                        {t.reports.chartViews[view]}
-                      </button>
-                    );
-                  })}
-                </div>
-              }
-            >
-              {hasTrafficData ? (
-                <SingleLineChart
-                  compact
-                  data={activeTrafficSeries}
-                  color={trafficChartView === "traffic" ? "#ef4444" : "#f59e0b"}
-                  suffix={trafficChartView === "traffic" ? " GB" : " Mbps"}
-                  variant={trafficChartView === "traffic" ? "bar" : "line"}
-                  strokeWidth={trafficChartView === "traffic" ? 2 : 1.35}
-                  pointRadius={trafficChartView === "traffic" ? 2.5 : 1.9}
-                  yAxisFormatter={(value) =>
-                    `${value.toLocaleString(props.locale === "en" ? "en-US" : "zh-CN", {
-                      maximumFractionDigits: 2,
-                    })}${trafficChartView === "traffic" ? " GB" : " Mbps"}`
-                  }
-                  tooltipTitle={
-                    trafficChartView === "traffic"
-                      ? t.reports.trafficTitle
-                      : t.reports.bandwidthTitle
-                  }
-                  tooltipValueFormatter={(value) =>
-                    `${value.toLocaleString(props.locale === "en" ? "en-US" : "zh-CN", {
-                      maximumFractionDigits: 2,
-                      minimumFractionDigits: 2,
-                    })}${trafficChartView === "traffic" ? " GB" : " Mbps"}`
-                  }
-                />
-              ) : (
-                <div className="rounded-[22px] border border-dashed border-slate-200 bg-slate-50/60 px-5 py-8 text-center text-sm text-slate-500">
-                  {t.reports.noDataDescription}
-                </div>
-              )}
-            </Panel>
+        {!hasCurrentData ? (
+          <section className="rounded-[24px] border border-dashed border-slate-300 bg-slate-50/70 px-5 py-8 text-center">
+            <p className="text-sm font-semibold text-slate-900">{t.reports.noDataTitle}</p>
+            <p className="mt-2 text-sm text-slate-500">{t.reports.noDataDescription}</p>
           </section>
+        ) : null}
 
-          <section>
-            <Panel
-              compact
-              title={t.reports.regionalTrafficTitle}
-              aside={
-                <span className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-medium text-rose-700">
-                  {t.reports.regionalTrafficTotalCost}: {report.regionalTrafficTotalCost}
-                </span>
-              }
-            >
-              {hasRegionalTrafficRows ? (
-                <DataTable
-                  compact
-                  headers={[
-                    t.reports.regionalTrafficHeaders[0],
-                    t.reports.regionalTrafficHeaders[1],
-                    t.reports.regionalTrafficHeaders[2],
-                    <div key="unit-price-header" className="flex items-center gap-2">
-                      <span>{t.reports.regionalTrafficHeaders[3]}</span>
-                      <div className="group relative">
-                        <span className="flex h-5 w-5 cursor-help items-center justify-center rounded-full border border-slate-200 bg-white text-[10px] font-semibold text-slate-500 transition hover:border-rose-200 hover:text-rose-600">
-                          ?
-                        </span>
-                        <div className="invisible absolute left-0 top-5 z-10 w-72 rounded-2xl border border-slate-200 bg-white p-3 text-sm font-normal leading-6 text-slate-600 opacity-0 shadow-xl shadow-slate-200 transition duration-150 group-hover:visible group-hover:opacity-100 group-hover:pointer-events-auto">
-                          <p>{t.reports.regionalTrafficPricingHelp}</p>
-                          <a
-                            href="https://www.alibabacloud.com/help/live/product-overview/resource-plans?spm=a2c63.p38356.0.i2#1ee19723aauzr"
-                            target="_blank"
-                            rel="noreferrer"
-                            className="mt-2 inline-flex text-sm font-medium text-rose-600 hover:text-rose-700"
-                          >
-                            {t.reports.regionalTrafficPricingLink}
-                          </a>
+        {queryType === "traffic" ? (
+          <>
+            <section>
+              <Panel
+                compact
+                title={
+                  trafficChartView === "traffic"
+                    ? t.reports.trafficTitle
+                    : t.reports.bandwidthTitle
+                }
+                aside={
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-1">
+                    {(["traffic", "bandwidth"] as const).map((view) => {
+                      const active = trafficChartView === view;
+
+                      return (
+                        <button
+                          key={view}
+                          type="button"
+                          onClick={() => setTrafficChartView(view)}
+                          className={`rounded-xl px-3 py-1.5 text-xs font-medium transition ${
+                            active
+                              ? "bg-white text-slate-950 shadow-sm"
+                              : "text-slate-500 hover:text-slate-900"
+                          }`}
+                        >
+                          {t.reports.chartViews[view]}
+                        </button>
+                      );
+                    })}
+                  </div>
+                }
+              >
+                {hasTrafficData ? (
+                  <SingleLineChart
+                    compact
+                    data={activeTrafficSeries}
+                    color={trafficChartView === "traffic" ? "#ef4444" : "#f59e0b"}
+                    suffix={trafficChartView === "traffic" ? " GB" : " Mbps"}
+                    variant={trafficChartView === "traffic" ? "bar" : "line"}
+                    strokeWidth={trafficChartView === "traffic" ? 2 : 1.35}
+                    pointRadius={trafficChartView === "traffic" ? 2.5 : 1.9}
+                    yAxisFormatter={(value) =>
+                      `${value.toLocaleString(props.locale === "en" ? "en-US" : "zh-CN", {
+                        maximumFractionDigits: 2,
+                      })}${trafficChartView === "traffic" ? " GB" : " Mbps"}`
+                    }
+                    tooltipTitle={
+                      trafficChartView === "traffic"
+                        ? t.reports.trafficTitle
+                        : t.reports.bandwidthTitle
+                    }
+                    tooltipValueFormatter={(value) =>
+                      `${value.toLocaleString(props.locale === "en" ? "en-US" : "zh-CN", {
+                        maximumFractionDigits: 2,
+                        minimumFractionDigits: 2,
+                      })}${trafficChartView === "traffic" ? " GB" : " Mbps"}`
+                    }
+                  />
+                ) : (
+                  <div className="rounded-[22px] border border-dashed border-slate-200 bg-slate-50/60 px-5 py-8 text-center text-sm text-slate-500">
+                    {t.reports.noDataDescription}
+                  </div>
+                )}
+              </Panel>
+            </section>
+
+            <section>
+              <Panel
+                compact
+                title={t.reports.regionalTrafficTitle}
+                aside={
+                  <span className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-medium text-rose-700">
+                    {t.reports.regionalTrafficTotalCost}: {report.regionalTrafficTotalCost}
+                  </span>
+                }
+              >
+                {hasRegionalTrafficRows ? (
+                  <DataTable
+                    compact
+                    headers={[
+                      t.reports.regionalTrafficHeaders[0],
+                      t.reports.regionalTrafficHeaders[1],
+                      t.reports.regionalTrafficHeaders[2],
+                      <div key="unit-price-header" className="flex items-center gap-2">
+                        <span>{t.reports.regionalTrafficHeaders[3]}</span>
+                        <div className="group relative">
+                          <span className="flex h-5 w-5 cursor-help items-center justify-center rounded-full border border-slate-200 bg-white text-[10px] font-semibold text-slate-500 transition hover:border-rose-200 hover:text-rose-600">
+                            ?
+                          </span>
+                          <div className="invisible absolute left-0 top-5 z-10 w-72 rounded-2xl border border-slate-200 bg-white p-3 text-sm font-normal leading-6 text-slate-600 opacity-0 shadow-xl shadow-slate-200 transition duration-150 group-hover:visible group-hover:opacity-100 group-hover:pointer-events-auto">
+                            <p>{t.reports.regionalTrafficPricingHelp}</p>
+                            <a
+                              href="https://www.alibabacloud.com/help/live/product-overview/resource-plans?spm=a2c63.p38356.0.i2#1ee19723aauzr"
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-2 inline-flex text-sm font-medium text-rose-600 hover:text-rose-700"
+                            >
+                              {t.reports.regionalTrafficPricingLink}
+                            </a>
+                          </div>
                         </div>
-                      </div>
-                    </div>,
-                    t.reports.regionalTrafficHeaders[4],
-                  ]}
-                  rows={report.regionalTrafficTable.map((row) => [
-                    renderRegionCell(row.regionCode, row.region),
-                    row.traffic,
-                    row.share,
-                    row.unitPrice,
-                    row.cost,
-                  ])}
-                />
-              ) : (
-                <div className="rounded-[22px] border border-dashed border-slate-200 bg-slate-50/60 px-5 py-8 text-center text-sm text-slate-500">
-                  {t.reports.noDataDescription}
-                </div>
-              )}
-            </Panel>
-          </section>
+                      </div>,
+                      t.reports.regionalTrafficHeaders[4],
+                    ]}
+                    rows={report.regionalTrafficTable.map((row) => [
+                      renderRegionCell(row.regionCode, row.region),
+                      row.traffic,
+                      row.share,
+                      row.unitPrice,
+                      row.cost,
+                    ])}
+                  />
+                ) : (
+                  <div className="rounded-[22px] border border-dashed border-slate-200 bg-slate-50/60 px-5 py-8 text-center text-sm text-slate-500">
+                    {t.reports.noDataDescription}
+                  </div>
+                )}
+              </Panel>
+            </section>
 
-          <section>
-            <Panel
-              compact
-              title={t.reports.trafficTableTitle}
-            >
-              {hasTrafficUsageRows ? (
-                <DataTable
-                  compact
-                  headers={[...t.reports.trafficTableHeaders]}
-                  rows={report.trafficUsageTable.map((row) => [row.period, row.traffic, row.peakBps])}
-                />
-              ) : (
-                <div className="rounded-[22px] border border-dashed border-slate-200 bg-slate-50/60 px-5 py-8 text-center text-sm text-slate-500">
-                  {t.reports.noDataDescription}
-                </div>
-              )}
-            </Panel>
-          </section>
-        </>
-      ) : (
-        <>
-          <section>
-            <Panel
-              compact
-              title={audienceChartView === "uv" ? t.reports.uvTitle : t.reports.pvTitle}
-              aside={
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-1">
-                  {(["uv", "pv"] as const).map((view) => {
-                    const active = audienceChartView === view;
+            <section>
+              <Panel
+                compact
+                title={t.reports.trafficTableTitle}
+              >
+                {hasTrafficUsageRows ? (
+                  <DataTable
+                    compact
+                    headers={[...t.reports.trafficTableHeaders]}
+                    rows={report.trafficUsageTable.map((row) => [row.period, row.traffic, row.peakBps])}
+                  />
+                ) : (
+                  <div className="rounded-[22px] border border-dashed border-slate-200 bg-slate-50/60 px-5 py-8 text-center text-sm text-slate-500">
+                    {t.reports.noDataDescription}
+                  </div>
+                )}
+              </Panel>
+            </section>
+          </>
+        ) : (
+          <>
+            <section>
+              <Panel
+                compact
+                title={audienceChartView === "uv" ? t.reports.uvTitle : t.reports.pvTitle}
+                aside={
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-1">
+                    {(["uv", "pv"] as const).map((view) => {
+                      const active = audienceChartView === view;
 
-                    return (
-                      <button
-                        key={view}
-                        type="button"
-                        onClick={() => setAudienceChartView(view)}
-                        className={`rounded-xl px-3 py-1.5 text-xs font-medium transition ${
-                          active
-                            ? "bg-white text-slate-950 shadow-sm"
-                            : "text-slate-500 hover:text-slate-900"
-                        }`}
-                      >
-                        {t.reports.audienceChartViews[view]}
-                      </button>
-                    );
-                  })}
-                </div>
-              }
-            >
-              {hasAudienceData ? (
-                <SingleLineChart
-                  compact
-                  data={activeAudienceSeries}
-                  color={audienceChartView === "uv" ? "#10b981" : "#ef4444"}
-                  suffix=""
-                  variant="line"
-                  strokeWidth={1.35}
-                  pointRadius={1.9}
-                  yAxisFormatter={(value) =>
-                    value.toLocaleString(props.locale === "en" ? "en-US" : "zh-CN", {
-                      maximumFractionDigits: 0,
-                    })
-                  }
-                  tooltipTitle={audienceChartView === "uv" ? "UV" : "PV"}
-                  tooltipValueFormatter={(value) =>
-                    value.toLocaleString(props.locale === "en" ? "en-US" : "zh-CN", {
-                      maximumFractionDigits: 0,
-                    })
-                  }
-                />
-              ) : (
-                <div className="rounded-[22px] border border-dashed border-slate-200 bg-slate-50/60 px-5 py-8 text-center text-sm text-slate-500">
-                  {t.reports.noDataDescription}
-                </div>
-              )}
-            </Panel>
-          </section>
+                      return (
+                        <button
+                          key={view}
+                          type="button"
+                          onClick={() => setAudienceChartView(view)}
+                          className={`rounded-xl px-3 py-1.5 text-xs font-medium transition ${
+                            active
+                              ? "bg-white text-slate-950 shadow-sm"
+                              : "text-slate-500 hover:text-slate-900"
+                          }`}
+                        >
+                          {t.reports.audienceChartViews[view]}
+                        </button>
+                      );
+                    })}
+                  </div>
+                }
+              >
+                {hasAudienceData ? (
+                  <SingleLineChart
+                    compact
+                    data={activeAudienceSeries}
+                    color={audienceChartView === "uv" ? "#10b981" : "#ef4444"}
+                    suffix=""
+                    variant="line"
+                    strokeWidth={1.35}
+                    pointRadius={1.9}
+                    yAxisFormatter={(value) =>
+                      value.toLocaleString(props.locale === "en" ? "en-US" : "zh-CN", {
+                        maximumFractionDigits: 0,
+                      })
+                    }
+                    tooltipTitle={audienceChartView === "uv" ? "UV" : "PV"}
+                    tooltipValueFormatter={(value) =>
+                      value.toLocaleString(props.locale === "en" ? "en-US" : "zh-CN", {
+                        maximumFractionDigits: 0,
+                      })
+                    }
+                  />
+                ) : (
+                  <div className="rounded-[22px] border border-dashed border-slate-200 bg-slate-50/60 px-5 py-8 text-center text-sm text-slate-500">
+                    {t.reports.noDataDescription}
+                  </div>
+                )}
+              </Panel>
+            </section>
 
-          <section>
-            <Panel
-              compact
-              title={t.reports.audienceTableTitle}
-            >
-              {hasAudienceUsageRows ? (
-                <DataTable
-                  compact
-                  headers={[...t.reports.audienceTableHeaders]}
-                  rows={report.audienceUsageTable.map((row) => [row.period, row.pv, row.uv])}
-                />
-              ) : (
-                <div className="rounded-[22px] border border-dashed border-slate-200 bg-slate-50/60 px-5 py-8 text-center text-sm text-slate-500">
-                  {t.reports.noDataDescription}
-                </div>
-              )}
-            </Panel>
-          </section>
-        </>
-      )}
+            <section>
+              <Panel
+                compact
+                title={t.reports.audienceTableTitle}
+              >
+                {hasAudienceUsageRows ? (
+                  <DataTable
+                    compact
+                    headers={[...t.reports.audienceTableHeaders]}
+                    rows={report.audienceUsageTable.map((row) => [row.period, row.pv, row.uv])}
+                  />
+                ) : (
+                  <div className="rounded-[22px] border border-dashed border-slate-200 bg-slate-50/60 px-5 py-8 text-center text-sm text-slate-500">
+                    {t.reports.noDataDescription}
+                  </div>
+                )}
+              </Panel>
+            </section>
+          </>
+        )}
+      </div>
     </div>
   );
 }

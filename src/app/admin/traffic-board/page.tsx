@@ -27,6 +27,7 @@ function buildAdminTrafficBoardNav(
     { label: t.adminTrafficBoardPage.nav.trafficBoard, href: "/admin/traffic-board", active: true },
     { label: t.adminTrafficBoardPage.nav.reports, href: "/admin/reports" },
     { label: t.adminTrafficBoardPage.nav.customers, href: "/admin/customers" },
+    { label: t.adminTrafficBoardPage.nav.announcements, href: "/admin/announcements" },
     ...(isSuperAdmin
       ? [{ label: t.adminTrafficBoardPage.nav.accounts, href: "/admin/accounts" }]
       : []),

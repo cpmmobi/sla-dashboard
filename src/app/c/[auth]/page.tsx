@@ -1,9 +1,11 @@
 import { DashboardShell } from "@/components/dashboard-ui";
+import { ClientAnnouncementCenter } from "@/components/client-announcement-center";
 import { TrafficReportView } from "@/components/traffic-report-view";
 import { getCurrentAdminSession } from "@/lib/admin-auth";
 import { getTranslations } from "@/lib/i18n";
 import { getCurrentLocale } from "@/lib/locale";
-import { getClientDashboard, recordCustomerReportAccess } from "@/lib/mock-backend";
+import { getClientAnnouncementView, getClientDashboard, recordCustomerReportAccess } from "@/lib/mock-backend";
+import { getRequestIp } from "@/lib/request-ip";
 import { normalizeClientReportFilters, parseReportFilters } from "@/lib/report-query";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
@@ -33,10 +35,10 @@ export default async function CustomerReportsPage({
     redirect("/");
   }
 
+  const ipAddress = getRequestIp(requestHeaders);
+  const announcementView = await getClientAnnouncementView(ipAddress);
+
   if (!adminSession) {
-    const forwardedFor = requestHeaders.get("x-forwarded-for");
-    const realIp = requestHeaders.get("x-real-ip");
-    const ipAddress = forwardedFor?.split(",")[0]?.trim() || realIp?.trim() || "unknown";
     await recordCustomerReportAccess({
       customerId: dashboard.customer.id,
       ipAddress,
@@ -61,6 +63,17 @@ export default async function CustomerReportsPage({
       badge={dashboard.customer.name}
       nav={nav}
       activeLabel={t.common.active}
+      footerContent={
+        announcementView ? (
+          <ClientAnnouncementCenter
+            locale={locale}
+            authCode={canonicalAuth}
+            announcements={announcementView.announcements}
+            initialAnnouncementId={announcementView.initialAnnouncementId}
+            triggerVariant="sidebar"
+          />
+        ) : null
+      }
     >
       <TrafficReportView
         key={`${canonicalAuth}-${JSON.stringify(filters)}`}

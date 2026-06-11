@@ -20,6 +20,7 @@ export default async function AdminAccountsPage() {
     { label: t.adminAccountsPage.nav.trafficBoard, href: "/admin/traffic-board" },
     { label: t.adminAccountsPage.nav.reports, href: "/admin/reports" },
     { label: t.adminAccountsPage.nav.customers, href: "/admin/customers" },
+    { label: t.adminAccountsPage.nav.announcements, href: "/admin/announcements" },
     { label: t.adminAccountsPage.nav.accounts, href: "/admin/accounts", active: true },
   ];
 

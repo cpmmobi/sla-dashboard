@@ -21,6 +21,7 @@ export default async function AdminReportsPage({
     { label: t.adminReportsPage.nav.trafficBoard, href: "/admin/traffic-board" },
     { label: t.adminReportsPage.nav.reports, href: "/admin/reports", active: true },
     { label: t.adminReportsPage.nav.customers, href: "/admin/customers" },
+    { label: t.adminReportsPage.nav.announcements, href: "/admin/announcements" },
     ...(adminSession.role === "super_admin"
       ? [{ label: t.adminReportsPage.nav.accounts, href: "/admin/accounts" }]
       : []),

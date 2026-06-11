@@ -54,3 +54,31 @@ model CustomerReportAccessLog {
   @@index([customerId, accessedAt])
   @@index([customerId, viewedByAdminAt])
 }
+
+model Announcement {
+  id               String                  @id @default(cuid())
+  titleZh          String
+  titleEn          String
+  contentZh        String
+  contentEn        String
+  startsAt         DateTime?
+  endsAt           DateTime?
+  enabled          Boolean                 @default(true)
+  createdByUsername String?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  dismissals       AnnouncementDismissal[]
+
+  @@index([enabled, startsAt, endsAt, createdAt])
+}
+
+model AnnouncementDismissal {
+  id             String       @id @default(cuid())
+  announcementId String
+  ipAddress      String
+  dismissedAt    DateTime     @default(now())
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+
+  @@unique([announcementId, ipAddress])
+  @@index([ipAddress, dismissedAt])
+}
