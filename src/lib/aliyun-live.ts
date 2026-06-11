@@ -397,20 +397,28 @@ function formatUsd(value: number, locale: Locale) {
   })} USD`;
 }
 
-function formatChartLabel(timestamp: string, startTime: string, endTime: string) {
-  const date = new Date(timestamp);
+function formatChartLabel(
+  timestamp: string,
+  startTime: string,
+  endTime: string,
+  offsetMinutes: number,
+) {
+  const shiftedDate = new Date(new Date(timestamp).getTime() + offsetMinutes * 60 * 1000);
   const start = new Date(startTime);
   const end = new Date(endTime);
   const durationMs = end.getTime() - start.getTime();
   const useDate = durationMs > 48 * 60 * 60 * 1000;
 
-  return date.toLocaleString("en-CA", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: useDate ? undefined : "2-digit",
-    minute: useDate ? undefined : "2-digit",
-    hour12: false,
-  }).replace(",", "");
+  const month = String(shiftedDate.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(shiftedDate.getUTCDate()).padStart(2, "0");
+
+  if (useDate) {
+    return `${month}-${day}`;
+  }
+
+  const hour = String(shiftedDate.getUTCHours()).padStart(2, "0");
+  const minute = String(shiftedDate.getUTCMinutes()).padStart(2, "0");
+  return `${month}-${day} ${hour}:${minute}`;
 }
 
 function formatTooltipLabel(timestamp: string, offsetMinutes: number) {
@@ -424,15 +432,14 @@ function formatTooltipLabel(timestamp: string, offsetMinutes: number) {
   return `${year}-${month}-${day} ${hour}:${minute}`;
 }
 
-function formatTableLabel(timestamp: string) {
-  return new Date(timestamp).toLocaleString("sv-SE", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
+function formatTableLabel(timestamp: string, offsetMinutes: number) {
+  const shifted = new Date(new Date(timestamp).getTime() + offsetMinutes * 60 * 1000);
+  const year = shifted.getUTCFullYear();
+  const month = String(shifted.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(shifted.getUTCDate()).padStart(2, "0");
+  const hour = String(shifted.getUTCHours()).padStart(2, "0");
+  const minute = String(shifted.getUTCMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hour}:${minute}`;
 }
 
 function formatMetricTimestamp(timestamp?: string, offsetMinutes = 8 * 60) {
@@ -523,7 +530,7 @@ function buildSeriesPoint(
   value: number,
 ): SeriesPoint {
   return {
-    label: formatChartLabel(point.timestamp, startTime, endTime),
+    label: formatChartLabel(point.timestamp, startTime, endTime, timeZoneOffsetMinutes),
     value,
     tooltipLabel: formatTooltipLabel(point.timestamp, timeZoneOffsetMinutes),
   };
@@ -536,7 +543,7 @@ function buildDualSeriesPoint(
   timeZoneOffsetMinutes: number,
 ): DualSeriesPoint {
   return {
-    label: formatChartLabel(point.timestamp, startTime, endTime),
+    label: formatChartLabel(point.timestamp, startTime, endTime, timeZoneOffsetMinutes),
     primary: point.pv,
     secondary: point.uv,
     tooltipLabel: formatTooltipLabel(point.timestamp, timeZoneOffsetMinutes),
@@ -547,6 +554,7 @@ function buildTrafficUsageTable(
   locale: Locale,
   trafficPoints: AnalyticsPoint[],
   bandwidthPoints: AnalyticsPoint[],
+  timeZoneOffsetMinutes: number,
 ) {
   const merged = new Map<string, AnalyticsPoint>();
 
@@ -568,7 +576,7 @@ function buildTrafficUsageTable(
   }
 
   return sortAnalyticsPoints(Array.from(merged.values())).map((point) => ({
-    period: formatTableLabel(point.timestamp),
+    period: formatTableLabel(point.timestamp, timeZoneOffsetMinutes),
     traffic: formatTraffic(point.trafficBytes, locale),
     pv: formatCount(point.pv, locale),
     uv: formatCount(point.uv, locale),
@@ -576,9 +584,9 @@ function buildTrafficUsageTable(
   }));
 }
 
-function buildAudienceUsageTable(locale: Locale, points: AnalyticsPoint[]) {
+function buildAudienceUsageTable(locale: Locale, points: AnalyticsPoint[], timeZoneOffsetMinutes: number) {
   return sortAnalyticsPoints(points).map((point) => ({
-    period: formatTableLabel(point.timestamp),
+    period: formatTableLabel(point.timestamp, timeZoneOffsetMinutes),
     traffic: formatTraffic(point.trafficBytes, locale),
     pv: formatCount(point.pv, locale),
     uv: formatCount(point.uv, locale),
@@ -633,8 +641,10 @@ function buildRegionalTrafficTable(locale: Locale, summaries: RegionalTrafficSum
 
 function normalizeAnalytics(
   locale: Locale,
-  startTime: string,
-  endTime: string,
+  queryStartTime: string,
+  queryEndTime: string,
+  displayStartTime: string,
+  displayEndTime: string,
   timeZoneOffsetMinutes: number,
   trafficPoints: AnalyticsPoint[],
   trafficIntervalSeconds: number,
@@ -646,20 +656,20 @@ function normalizeAnalytics(
 ): LiveDomainReportData {
   const trafficDisplayPoints = buildContinuousAnalyticsPoints(
     sortAnalyticsPoints(trafficPoints),
-    startTime,
-    endTime,
+    queryStartTime,
+    queryEndTime,
     trafficIntervalSeconds,
   );
   const bandwidthDisplayPoints = buildContinuousAnalyticsPoints(
     sortAnalyticsPoints(bandwidthPoints),
-    startTime,
-    endTime,
+    queryStartTime,
+    queryEndTime,
     bandwidthIntervalSeconds,
   );
   const pvUvDisplayPoints = buildContinuousAnalyticsPoints(
     sortAnalyticsPoints(pvUvPoints),
-    startTime,
-    endTime,
+    queryStartTime,
+    queryEndTime,
     pvUvIntervalSeconds,
   );
   const metricPointsMap = new Map<string, AnalyticsPoint>();
@@ -697,8 +707,8 @@ function normalizeAnalytics(
 
   const syncText =
     locale === "en"
-      ? `Alibaba Cloud • ${startTime} - ${endTime}`
-      : `阿里云 • ${startTime} - ${endTime}`;
+      ? `Alibaba Cloud • ${displayStartTime} - ${displayEndTime}`
+      : `阿里云 • ${displayStartTime} - ${displayEndTime}`;
 
   return {
     metrics: buildMetrics(
@@ -713,8 +723,8 @@ function normalizeAnalytics(
     trafficTrend: trafficDisplayPoints.map((point) =>
       buildSeriesPoint(
         point,
-        startTime,
-        endTime,
+        queryStartTime,
+        queryEndTime,
         timeZoneOffsetMinutes,
         formatTrafficValue(point.trafficBytes),
       ),
@@ -722,17 +732,22 @@ function normalizeAnalytics(
     peakBandwidth: bandwidthDisplayPoints.map((point) =>
       buildSeriesPoint(
         point,
-        startTime,
-        endTime,
+        queryStartTime,
+        queryEndTime,
         timeZoneOffsetMinutes,
         formatBandwidthValue(point.bps),
       ),
     ),
     pvUvTrend: pvUvDisplayPoints.map((point) =>
-      buildDualSeriesPoint(point, startTime, endTime, timeZoneOffsetMinutes),
+      buildDualSeriesPoint(point, queryStartTime, queryEndTime, timeZoneOffsetMinutes),
     ),
-    trafficUsageTable: buildTrafficUsageTable(locale, trafficDisplayPoints, bandwidthDisplayPoints),
-    audienceUsageTable: buildAudienceUsageTable(locale, pvUvDisplayPoints),
+    trafficUsageTable: buildTrafficUsageTable(
+      locale,
+      trafficDisplayPoints,
+      bandwidthDisplayPoints,
+      timeZoneOffsetMinutes,
+    ),
+    audienceUsageTable: buildAudienceUsageTable(locale, pvUvDisplayPoints, timeZoneOffsetMinutes),
     regionalTrafficTable: buildRegionalTrafficTable(locale, regionalTrafficSummaries),
     regionalTrafficTotalCost: formatUsd(
       regionalTrafficSummaries.reduce((sum, item) => {
@@ -1041,6 +1056,8 @@ export async function fetchLiveDomainReportResult(
     return {
       data: normalizeAnalytics(
         locale,
+        window.startTime,
+        window.endTime,
         window.fromDisplay,
         window.toDisplay,
         filters.timeZoneOffsetMinutes ?? 8 * 60,
