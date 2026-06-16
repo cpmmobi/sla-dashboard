@@ -12,6 +12,7 @@ import {
 import {
   fetchLiveDomainReport,
   fetchLiveDomainReportResult,
+  fetchLiveDomainRegionalTrafficSummaryResult,
   fetchLiveDomainTrafficSummaryResult,
   type LiveDomainReportData,
   type LiveDomainReportFailureReason,
@@ -26,6 +27,7 @@ import {
   normalizeClientReportFilters,
   type ReportFilters,
 } from "@/lib/report-query";
+import { Prisma } from "@prisma/client";
 
 export type CustomerRecord = {
   id: string;
@@ -36,7 +38,8 @@ export type CustomerRecord = {
   notes: string;
   accountManagerEmail: string | null;
   renewalDay: number | null;
-  monthlyGiftTrafficGb: number | null;
+  monthlyGiftCreditUsd: number | null;
+  cumulativeGiftCreditUsd: number | null;
   trafficMarkupPercent: number | null;
 };
 
@@ -105,6 +108,80 @@ export type ClientAnnouncementView = {
   initialAnnouncementId: string | null;
 };
 
+export type SettlementStatementStatus = "pending" | "settled" | "partial" | "failed";
+export type SettlementStatementType = "daily_charge" | "historical_reconstruction";
+export type SettlementLedgerEntryType =
+  | "manual_recharge"
+  | "manual_writeoff"
+  | "manual_cycle_gift"
+  | "manual_cumulative_gift"
+  | "monthly_gift_grant"
+  | "cumulative_gift_grant"
+  | "traffic_charge";
+
+export type SettlementAdjustmentType = "recharge" | "writeoff";
+
+export type SettlementBalanceRow = {
+  customerId: string;
+  customerName: string;
+  rechargeBalanceUsd: number;
+  monthlyGiftBalanceUsd: number;
+  cumulativeGiftBalanceUsd: number;
+  totalBalanceUsd: number;
+  yesterdayStatus: SettlementStatementStatus;
+  lastUpdatedAt: string | null;
+};
+
+export type SettlementStatementRow = {
+  id: string;
+  customerId: string;
+  customerName: string;
+  statementDate: string;
+  statementType: SettlementStatementType;
+  trafficCostUsd: number;
+  deductedUsd: number;
+  remainingAmountUsd: number;
+  status: SettlementStatementStatus;
+  updatedAt: string;
+};
+
+export type SettlementLedgerEntryRow = {
+  id: string;
+  customerId: string;
+  customerName: string;
+  entryType: SettlementLedgerEntryType;
+  direction: "credit" | "debit";
+  amountUsd: number;
+  balanceAfterTotalUsd: number;
+  note: string;
+  createdByUsername: string | null;
+  createdAt: string;
+};
+
+export type SettlementCenterView = {
+  totalCustomers: number;
+  totalBalanceUsd: number;
+  settledYesterdayCount: number;
+  pendingStatementCount: number;
+  customers: SettlementBalanceRow[];
+  recentStatements: SettlementStatementRow[];
+  recentLedgerEntries: SettlementLedgerEntryRow[];
+};
+
+export type SettlementCustomerDetailView = {
+  customerId: string;
+  customerName: string;
+  rechargeBalanceUsd: number;
+  monthlyGiftBalanceUsd: number;
+  cumulativeGiftBalanceUsd: number;
+  totalBalanceUsd: number;
+  lastUpdatedAt: string | null;
+  lastSnapshotAt: string | null;
+  lastSettledAt: string | null;
+  ledgerEntries: SettlementLedgerEntryRow[];
+  statements: SettlementStatementRow[];
+};
+
 export type TrafficBoardPeriod =
   | "cycle"
   | "lastCycle"
@@ -127,11 +204,12 @@ export type TrafficBoardRow = {
   reportHref: string;
   hasLiveData: boolean;
   trafficGb: number;
+  trafficCost: string | null;
+  trafficCostUsd: number;
+  trafficCostCanRetry: boolean;
   trafficHint: string | null;
   canRetry: boolean;
   trafficMarkupPercent: number | null;
-  monthlyGiftTrafficGb: number | null;
-  giftUsageRate: string | null;
   projectedMonthTraffic: string | null;
 };
 
@@ -147,6 +225,7 @@ export type TrafficBoardShellView = {
   cycleHint: string;
   period: TrafficBoardPeriod;
   trafficLabel: string;
+  trafficCostLabel: string;
 };
 
 export type TrafficBoardView = {
@@ -156,6 +235,7 @@ export type TrafficBoardView = {
   cycleHint: string;
   period: TrafficBoardPeriod;
   trafficLabel: string;
+  trafficCostLabel: string;
 };
 
 export type ClientDashboard = {
@@ -172,6 +252,7 @@ export type ClientDashboard = {
   audienceUsageTable: TableRow[];
   regionalTrafficTable: RegionTrafficRow[];
   regionalTrafficTotalCost: string;
+  regionalTrafficComplete?: boolean;
 };
 
 export type AdminReportRecord = {
@@ -190,6 +271,7 @@ export type AdminReportRecord = {
   audienceUsageTable: TableRow[];
   regionalTrafficTable: RegionTrafficRow[];
   regionalTrafficTotalCost: string;
+  regionalTrafficComplete?: boolean;
 };
 
 function parseStoredDomains(domainsJson: string, fallbackDomain: string) {
@@ -234,7 +316,7 @@ function normalizeRenewalDay(value?: number | null): number | null {
   return value >= 1 && value <= 31 ? value : null;
 }
 
-function normalizeMonthlyGiftTrafficGb(value?: number | null): number | null {
+function normalizeGiftCreditUsd(value?: number | null): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return null;
   }
@@ -371,7 +453,9 @@ function toCustomerRecord(customer: {
   notes: string;
   accountManagerEmail: string | null;
   renewalDay: number | null;
-  monthlyGiftTrafficGb: number | null;
+  monthlyGiftCreditUsd?: number | null;
+  cumulativeGiftCreditUsd?: number | null;
+  monthlyGiftTrafficGb?: number | null;
   trafficMarkupPercent: number | null;
 }): CustomerRecord {
   return {
@@ -386,10 +470,26 @@ function toCustomerRecord(customer: {
     notes: customer.notes,
     accountManagerEmail: customer.accountManagerEmail,
     renewalDay: normalizeRenewalDay(customer.renewalDay),
-    monthlyGiftTrafficGb: normalizeMonthlyGiftTrafficGb(customer.monthlyGiftTrafficGb),
+    monthlyGiftCreditUsd: normalizeGiftCreditUsd(customer.monthlyGiftCreditUsd),
+    cumulativeGiftCreditUsd: normalizeGiftCreditUsd(customer.cumulativeGiftCreditUsd),
     trafficMarkupPercent: normalizeTrafficMarkupPercent(customer.trafficMarkupPercent),
   };
 }
+
+const customerCoreSelect = {
+  id: true,
+  name: true,
+  authCode: true,
+  domain: true,
+  domainsJson: true,
+  status: true,
+  timezone: true,
+  contact: true,
+  notes: true,
+  accountManagerEmail: true,
+  renewalDay: true,
+  trafficMarkupPercent: true,
+} as const;
 
 function buildUnavailableMetrics(locale: Locale): Metric[] {
   if (locale === "en") {
@@ -456,6 +556,7 @@ function buildUnavailableReport(locale: Locale) {
     audienceUsageTable: [] as TableRow[],
     regionalTrafficTable: [] as RegionTrafficRow[],
     regionalTrafficTotalCost: "--",
+    regionalTrafficComplete: false,
   };
 }
 
@@ -509,13 +610,6 @@ function formatTrafficFromGb(valueGb: number, locale: Locale) {
     maximumFractionDigits: 2,
     minimumFractionDigits: 2,
   })} GB`;
-}
-
-function formatPercent(value: number, locale: Locale) {
-  return `${value.toLocaleString(locale === "en" ? "en-US" : "zh-CN", {
-    minimumFractionDigits: 1,
-    maximumFractionDigits: 1,
-  })}%`;
 }
 
 function formatBandwidthFromMbps(valueMbps: number, locale: Locale) {
@@ -705,10 +799,6 @@ function getPreviousBillingCycleMeta(
   };
 }
 
-function shouldShowGiftTrafficMetrics(period: TrafficBoardPeriod) {
-  return period === "cycle" || period === "lastCycle";
-}
-
 function shouldShowGiftTrafficProjection(period: TrafficBoardPeriod) {
   return period === "cycle" || period === "lastCycle";
 }
@@ -837,6 +927,27 @@ function buildTrafficBoardFilters(period: TrafficBoardPeriod, renewalDay: number
   };
 }
 
+function buildRollingHoursTrafficFilters(hours: number, now: Date, offsetMinutes = 8 * 60) {
+  const safeHours = Math.max(1, hours);
+  const nowParts = getDatePartsAtOffset(now, offsetMinutes);
+  const start = new Date(now.getTime() - safeHours * 60 * 60 * 1000);
+  const startParts = getDatePartsAtOffset(start, offsetMinutes);
+
+  return {
+    filters: {
+      queryType: "traffic" as const,
+      timeRange: "custom" as const,
+      area: "all" as const,
+      from: formatLocalDateTime(startParts.year, startParts.month, startParts.day, startParts.hour, startParts.minute),
+      to: formatLocalDateTime(nowParts.year, nowParts.month, nowParts.day, nowParts.hour, nowParts.minute),
+      timeZone: "Asia/Shanghai",
+      timeZoneOffsetMinutes: offsetMinutes,
+      locations: [],
+    },
+    elapsedHours: Math.max(1 / 60, (now.getTime() - start.getTime()) / (60 * 60 * 1000)),
+  };
+}
+
 function buildTrafficBoardReportHref(
   customer: CustomerRecord,
   period: TrafficBoardPeriod,
@@ -884,7 +995,7 @@ function getTrafficMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
     }
 
     if (period === "lastCycle") {
-      return "Previous Billing Cycle Traffic";
+      return "Previous Cycle Traffic";
     }
 
     if (period === "last3") {
@@ -903,7 +1014,7 @@ function getTrafficMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
       return "Last Month Traffic";
     }
 
-    return "Billing Cycle Traffic";
+    return "Cycle Traffic";
   }
 
   if (period === "today") {
@@ -934,7 +1045,71 @@ function getTrafficMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
     return "上月流量";
   }
 
-  return "账期累计流量";
+  return "账期流量";
+}
+
+function getTrafficCostMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
+  if (locale === "en") {
+    if (period === "today") {
+      return "Today Cost";
+    }
+
+    if (period === "last24") {
+      return "Last 24 Hours Cost";
+    }
+
+    if (period === "lastCycle") {
+      return "Previous Cycle Cost";
+    }
+
+    if (period === "last3") {
+      return "Last 3 Days Cost";
+    }
+
+    if (period === "last30") {
+      return "Last 30 Days Cost";
+    }
+
+    if (period === "currentMonth") {
+      return "This Month Cost";
+    }
+
+    if (period === "lastMonth") {
+      return "Last Month Cost";
+    }
+
+    return "Traffic Cost";
+  }
+
+  if (period === "today") {
+    return "今日流量费用";
+  }
+
+  if (period === "last24") {
+    return "近 24 小时流量费用";
+  }
+
+  if (period === "lastCycle") {
+    return "上一账期流量费用";
+  }
+
+  if (period === "last3") {
+    return "近 3 天流量费用";
+  }
+
+  if (period === "last30") {
+    return "近 30 天流量费用";
+  }
+
+  if (period === "currentMonth") {
+    return "本月流量费用";
+  }
+
+  if (period === "lastMonth") {
+    return "上月流量费用";
+  }
+
+  return "流量费用";
 }
 
 function getTrafficBoardHint(
@@ -1225,10 +1400,13 @@ function applyTrafficMarkupToLiveReportData(
     trafficTrend,
     trafficUsageTable,
     regionalTrafficTable,
-    regionalTrafficTotalCost: formatUsd(
-      applyTrafficMarkupToUsd(parseUsd(report.regionalTrafficTotalCost), normalizedTrafficMarkupPercent),
-      locale,
-    ),
+    regionalTrafficTotalCost:
+      report.regionalTrafficTotalCost === "--"
+        ? "--"
+        : formatUsd(
+            applyTrafficMarkupToUsd(parseUsd(report.regionalTrafficTotalCost), normalizedTrafficMarkupPercent),
+            locale,
+          ),
   };
 }
 
@@ -1486,6 +1664,7 @@ async function buildAllDomainsTrafficReport(
   const trafficTrend = aggregateSeriesPoints(reports, "trafficTrend");
   const peakBandwidth = aggregateSeriesPoints(reports, "peakBandwidth");
   const aggregatedRegional = aggregateRegionalTraffic(reports, locale);
+  const regionalTrafficComplete = reports.every((report) => report.regionalTrafficComplete !== false);
   const syncText = reports[0]?.syncText ?? (locale === "en" ? "Alibaba Cloud" : "阿里云");
 
   return {
@@ -1498,8 +1677,9 @@ async function buildAllDomainsTrafficReport(
       highlights: [] as ActivityItem[],
       trafficUsageTable: aggregateTrafficUsageTable(reports, locale),
       audienceUsageTable: [] as TableRow[],
-      regionalTrafficTable: aggregatedRegional.rows,
-      regionalTrafficTotalCost: aggregatedRegional.totalCost,
+      regionalTrafficTable: regionalTrafficComplete ? aggregatedRegional.rows : [],
+      regionalTrafficTotalCost: regionalTrafficComplete ? aggregatedRegional.totalCost : "--",
+      regionalTrafficComplete,
     },
     matchedDomainCount: accountedDomainCount,
     failureReason: null,
@@ -1545,6 +1725,70 @@ async function buildAllDomainsTrafficSummary(
   };
 }
 
+async function buildAllDomainsRegionalTrafficSummary(
+  domains: string[],
+  filters: ReportFilters,
+  locale: Locale,
+) {
+  const results: Array<{
+    domain: string;
+    result: Awaited<ReturnType<typeof fetchLiveDomainRegionalTrafficSummaryResult>>;
+  }> = [];
+
+  for (const domain of domains) {
+    results.push({
+      domain,
+      result: await fetchLiveDomainRegionalTrafficSummaryResult(domain, filters, locale),
+    });
+  }
+
+  for (const entry of results) {
+    if (entry.result.reason !== "request_failed") {
+      continue;
+    }
+
+    entry.result = await fetchLiveDomainRegionalTrafficSummaryResult(entry.domain, filters, locale);
+  }
+
+  const summaries = results
+    .map((entry) => entry.result.data)
+    .filter((summary): summary is { totalTrafficGb: number; totalCostUsd: number } => Boolean(summary));
+
+  if (summaries.length === 0) {
+    const reasons = new Set(
+      results
+        .map((entry) => entry.result.reason)
+        .filter((reason): reason is LiveDomainReportFailureReason => Boolean(reason)),
+    );
+
+    let failureReason: LiveDomainReportFailureReason = "request_failed";
+    if (reasons.has("empty")) {
+      failureReason = "empty";
+    } else if (reasons.has("domain_not_found")) {
+      failureReason = "domain_not_found";
+    }
+
+    return {
+      totalTrafficGb: 0,
+      totalCostUsd: 0,
+      matchedDomainCount: 0,
+      failureReason,
+    };
+  }
+
+  return {
+    totalTrafficGb: Number(summaries.reduce((sum, summary) => sum + summary.totalTrafficGb, 0).toFixed(2)),
+    totalCostUsd: Number(summaries.reduce((sum, summary) => sum + summary.totalCostUsd, 0).toFixed(2)),
+    matchedDomainCount: summaries.length,
+    failureReason:
+      summaries.length < domains.length
+        ? results.some((entry) => entry.result.reason === "domain_not_found")
+          ? ("domain_not_found" as const)
+          : ("request_failed" as const)
+        : null,
+  };
+}
+
 function buildTrafficBoardBaseRow(
   customer: CustomerRecord,
   locale: Locale,
@@ -1565,6 +1809,9 @@ function buildTrafficBoardBaseRow(
     reportHref: buildTrafficBoardReportHref(customer, period, trafficWindow.filters),
     hasLiveData: false,
     trafficGb: 0,
+    trafficCost: null,
+    trafficCostUsd: 0,
+    trafficCostCanRetry: false,
     trafficHint:
       customer.status !== "正常"
         ? getTrafficBoardHint(locale, "inactive")
@@ -1573,8 +1820,6 @@ function buildTrafficBoardBaseRow(
           : null,
     canRetry: false,
     trafficMarkupPercent: customer.trafficMarkupPercent,
-    monthlyGiftTrafficGb: customer.monthlyGiftTrafficGb,
-    giftUsageRate: null,
     projectedMonthTraffic: null,
   };
 
@@ -1636,56 +1881,100 @@ async function buildTrafficBoardRow(
     };
   }
 
-  const reportResult = await buildAllDomainsTrafficSummary(customer.domains, base.filters);
-  const hasLiveData = reportResult.matchedDomainCount > 0;
+  const summaryResult = await buildAllDomainsRegionalTrafficSummary(customer.domains, base.filters, locale);
+  const hasLiveData = summaryResult.matchedDomainCount > 0;
   const trafficGb = hasLiveData
-    ? applyTrafficMarkupToGb(reportResult.totalTrafficGb, customer.trafficMarkupPercent)
+    ? applyTrafficMarkupToGb(summaryResult.totalTrafficGb, customer.trafficMarkupPercent)
     : 0;
+  let trafficCost: string | null = null;
+  let trafficCostUsd = 0;
+  let trafficCostCanRetry = false;
   const trafficHint = hasLiveData
-    ? reportResult.matchedDomainCount < customer.domains.length
+    ? summaryResult.matchedDomainCount < customer.domains.length
       ? getTrafficBoardHint(
           locale,
           "partial_domains",
-          reportResult.matchedDomainCount,
+          summaryResult.matchedDomainCount,
           customer.domains.length,
         )
       : null
-    : getTrafficBoardHint(locale, reportResult.failureReason ?? "request_failed");
+    : getTrafficBoardHint(locale, summaryResult.failureReason ?? "request_failed");
   const canRetry = hasLiveData
-    ? reportResult.matchedDomainCount < customer.domains.length
-    : reportResult.failureReason === "request_failed" ||
-        reportResult.failureReason === "domain_not_found";
-  const selectedGiftTrafficAvailable =
-    shouldShowGiftTrafficMetrics(period) &&
-    customer.monthlyGiftTrafficGb &&
-    (reportResult.matchedDomainCount > 0 || reportResult.failureReason === "empty");
-  const selectedGiftTrafficGb = hasLiveData ? trafficGb : 0;
-  const giftUsageRate =
-    customer.monthlyGiftTrafficGb && customer.monthlyGiftTrafficGb > 0 && selectedGiftTrafficAvailable
-      ? formatPercent((selectedGiftTrafficGb / customer.monthlyGiftTrafficGb) * 100, locale)
-      : null;
-  const projectedPeriodTrafficGb =
+    ? summaryResult.matchedDomainCount < customer.domains.length
+    : summaryResult.failureReason === "request_failed" ||
+        summaryResult.failureReason === "domain_not_found";
+  if (hasLiveData) {
+    trafficCostUsd = applyTrafficMarkupToUsd(
+      summaryResult.totalCostUsd,
+      customer.trafficMarkupPercent,
+    );
+    trafficCost = formatUsd(trafficCostUsd, locale);
+  }
+  if (canRetry) {
+    trafficCostCanRetry = true;
+  }
+  const selectedTrafficAvailable =
     shouldShowGiftTrafficProjection(period) &&
-    selectedGiftTrafficAvailable &&
+    (summaryResult.matchedDomainCount > 0 || summaryResult.failureReason === "empty");
+  const selectedTrafficGb = hasLiveData ? trafficGb : 0;
+  const currentWindowHours =
+    base.windowElapsedDays && base.windowElapsedDays > 0 ? base.windowElapsedDays * 24 : null;
+  const remainingWindowHours =
     base.windowElapsedDays &&
     base.windowTotalDays &&
-    base.windowElapsedDays > 0
-      ? Number(((selectedGiftTrafficGb / base.windowElapsedDays) * base.windowTotalDays).toFixed(2))
-      : null;
+    base.windowTotalDays > base.windowElapsedDays
+      ? (base.windowTotalDays - base.windowElapsedDays) * 24
+      : 0;
+  let projectedPeriodTrafficGb: number | null = null;
+  let projectedPeriodTrafficSource: "recent_72h" | "current_cycle_fallback" | "actual_only" | null = null;
+
+  if (shouldShowGiftTrafficProjection(period) && selectedTrafficAvailable && currentWindowHours) {
+    if (remainingWindowHours <= 0) {
+      projectedPeriodTrafficGb = selectedTrafficGb;
+      projectedPeriodTrafficSource = "actual_only";
+    } else {
+      const recent72HoursWindow = buildRollingHoursTrafficFilters(72, now);
+      const recent72HoursResult = await buildAllDomainsTrafficSummary(customer.domains, recent72HoursWindow.filters);
+
+      if (recent72HoursResult.matchedDomainCount > 0 || recent72HoursResult.failureReason === "empty") {
+        const recent72HoursTrafficGb =
+          recent72HoursResult.matchedDomainCount > 0
+            ? applyTrafficMarkupToGb(recent72HoursResult.totalTrafficGb, customer.trafficMarkupPercent)
+            : 0;
+        const recent72HoursAverageGb = recent72HoursTrafficGb / recent72HoursWindow.elapsedHours;
+
+        projectedPeriodTrafficGb = Number(
+          (selectedTrafficGb + recent72HoursAverageGb * remainingWindowHours).toFixed(2),
+        );
+        projectedPeriodTrafficSource = "recent_72h";
+      } else {
+        const currentWindowAverageGb = selectedTrafficGb / currentWindowHours;
+
+        projectedPeriodTrafficGb = Number(
+          (selectedTrafficGb + currentWindowAverageGb * remainingWindowHours).toFixed(2),
+        );
+        projectedPeriodTrafficSource = "current_cycle_fallback";
+      }
+    }
+  }
 
   console.info(
     `Traffic board row query finished ${stringifyTrafficBoardLog({
       ...requestDebug,
-        hasLiveData,
+      hasLiveData,
       trafficGb,
-        traffic: hasLiveData ? formatTrafficFromGb(trafficGb, locale) : "--",
-      matchedDomainCount: reportResult.matchedDomainCount,
-      failureReason: reportResult.failureReason,
+      trafficCost,
+      trafficCostUsd,
+      trafficCostCanRetry,
+      traffic: hasLiveData ? formatTrafficFromGb(trafficGb, locale) : "--",
+      matchedDomainCount: summaryResult.matchedDomainCount,
+      failureReason: summaryResult.failureReason,
       trafficHint,
-      monthlyGiftTrafficGb: customer.monthlyGiftTrafficGb,
-      giftUsageRate,
-      selectedGiftTrafficGb,
+      selectedTrafficGb,
+      currentWindowHours,
+      remainingWindowHours,
       projectedPeriodTrafficGb,
+      projectedPeriodTrafficSource,
       durationMs: Date.now() - startedAt,
     })}`,
   );
@@ -1696,10 +1985,11 @@ async function buildTrafficBoardRow(
       traffic: hasLiveData ? formatTrafficFromGb(trafficGb, locale) : "--",
       hasLiveData,
       trafficGb,
+      trafficCost,
+      trafficCostUsd,
+      trafficCostCanRetry,
       trafficHint,
       canRetry,
-      monthlyGiftTrafficGb: customer.monthlyGiftTrafficGb,
-      giftUsageRate,
       projectedMonthTraffic: projectedPeriodTrafficGb ? formatTrafficFromGb(projectedPeriodTrafficGb, locale) : null,
     },
     daysUntilRenewal: base.daysUntilRenewal,
@@ -1731,6 +2021,7 @@ export async function getTrafficBoardShellView(
     cycleHint: getTrafficBoardCycleHint(locale, period),
     period,
     trafficLabel: getTrafficMetricLabel(locale, period),
+    trafficCostLabel: getTrafficCostMetricLabel(locale, period),
   };
 }
 
@@ -1790,17 +2081,20 @@ export async function getTrafficBoardView(
     cycleHint: getTrafficBoardCycleHint(locale, period),
     period,
     trafficLabel: getTrafficMetricLabel(locale, period),
+    trafficCostLabel: getTrafficCostMetricLabel(locale, period),
   };
 }
 
 export function getCustomers() {
   return prisma.customer.findMany({
+    select: customerCoreSelect,
     orderBy: { updatedAt: "desc" },
   });
 }
 
 export function getCustomersForAdmin(adminSession: AdminSession) {
   return prisma.customer.findMany({
+    select: customerCoreSelect,
     where: isSuperAdmin(adminSession)
       ? undefined
       : {
@@ -1824,6 +2118,7 @@ function formatAdminAccessLogDate(date: Date, locale: Locale) {
 
 async function getCustomerForAdmin(id: string, adminSession: AdminSession) {
   return prisma.customer.findFirst({
+    select: customerCoreSelect,
     where: isSuperAdmin(adminSession)
       ? { id }
       : {
@@ -1836,6 +2131,7 @@ async function getCustomerForAdmin(id: string, adminSession: AdminSession) {
 export async function getCustomerByAuth(authCode?: string | null) {
   if (!authCode) {
     const firstCustomer = await prisma.customer.findFirst({
+      select: customerCoreSelect,
       orderBy: { createdAt: "asc" },
     });
 
@@ -1843,6 +2139,7 @@ export async function getCustomerByAuth(authCode?: string | null) {
   }
 
   const customer = await prisma.customer.findUnique({
+    select: customerCoreSelect,
     where: { authCode },
   });
 
@@ -2022,7 +2319,8 @@ export async function createCustomer(input: {
   status: CustomerStatus;
   accountManagerEmail?: string | null;
   renewalDay?: number | null;
-  monthlyGiftTrafficGb?: number | null;
+  monthlyGiftCreditUsd?: number | null;
+  cumulativeGiftCreditUsd?: number | null;
   trafficMarkupPercent?: number | null;
   notes?: string;
 }) {
@@ -2031,7 +2329,8 @@ export async function createCustomer(input: {
     ? normalizeAccountManagerEmail(input.accountManagerEmail)
     : input.adminSession.username;
   const renewalDay = normalizeRenewalDay(input.renewalDay);
-  const monthlyGiftTrafficGb = normalizeMonthlyGiftTrafficGb(input.monthlyGiftTrafficGb);
+  const monthlyGiftCreditUsd = normalizeGiftCreditUsd(input.monthlyGiftCreditUsd);
+  const cumulativeGiftCreditUsd = normalizeGiftCreditUsd(input.cumulativeGiftCreditUsd);
   const trafficMarkupPercent = isSuperAdmin(input.adminSession)
     ? normalizeTrafficMarkupPercent(input.trafficMarkupPercent)
     : null;
@@ -2047,7 +2346,8 @@ export async function createCustomer(input: {
       notes: input.notes?.trim() || "暂无备注",
       accountManagerEmail,
       renewalDay,
-      monthlyGiftTrafficGb,
+      monthlyGiftCreditUsd,
+      cumulativeGiftCreditUsd,
       trafficMarkupPercent,
     },
   });
@@ -2065,7 +2365,8 @@ export async function updateCustomer(
     status: CustomerStatus;
     accountManagerEmail?: string | null;
     renewalDay?: number | null;
-    monthlyGiftTrafficGb?: number | null;
+    monthlyGiftCreditUsd?: number | null;
+    cumulativeGiftCreditUsd?: number | null;
     trafficMarkupPercent?: number | null;
     notes?: string;
   },
@@ -2080,7 +2381,8 @@ export async function updateCustomer(
     ? normalizeAccountManagerEmail(input.accountManagerEmail)
     : existingCustomer.accountManagerEmail ?? input.adminSession.username;
   const renewalDay = normalizeRenewalDay(input.renewalDay);
-  const monthlyGiftTrafficGb = normalizeMonthlyGiftTrafficGb(input.monthlyGiftTrafficGb);
+  const monthlyGiftCreditUsd = normalizeGiftCreditUsd(input.monthlyGiftCreditUsd);
+  const cumulativeGiftCreditUsd = normalizeGiftCreditUsd(input.cumulativeGiftCreditUsd);
   const trafficMarkupPercent = isSuperAdmin(input.adminSession)
     ? normalizeTrafficMarkupPercent(input.trafficMarkupPercent)
     : normalizeTrafficMarkupPercent(existingCustomer.trafficMarkupPercent);
@@ -2097,7 +2399,8 @@ export async function updateCustomer(
       notes: input.notes?.trim() || "暂无备注",
       accountManagerEmail,
       renewalDay,
-      monthlyGiftTrafficGb,
+      monthlyGiftCreditUsd,
+      cumulativeGiftCreditUsd,
       trafficMarkupPercent,
     },
   });
@@ -2473,6 +2776,783 @@ export async function getAdminView(locale: Locale, adminSession: AdminSession) {
       reportAccessTotalCount: totalLogCountMap[customer.id] ?? 0,
       lastReportAccessAt: latestLogMap[customer.id] ?? null,
     })),
+  };
+}
+
+const SHANGHAI_OFFSET_MINUTES = 8 * 60;
+type PrismaTx = Prisma.TransactionClient;
+
+function roundUsd(value: number) {
+  return Number(value.toFixed(2));
+}
+
+function roundGb(value: number) {
+  return Number(value.toFixed(2));
+}
+
+function getTotalBalanceUsd(input: {
+  rechargeBalanceUsd: number;
+  monthlyGiftBalanceUsd: number;
+  cumulativeGiftBalanceUsd: number;
+}) {
+  return roundUsd(
+    input.rechargeBalanceUsd + input.monthlyGiftBalanceUsd + input.cumulativeGiftBalanceUsd,
+  );
+}
+
+function toLocalDayStartUtc(date: Date, offsetMinutes = SHANGHAI_OFFSET_MINUTES) {
+  const shifted = new Date(date.getTime() + offsetMinutes * 60 * 1000);
+  return new Date(
+    Date.UTC(
+      shifted.getUTCFullYear(),
+      shifted.getUTCMonth(),
+      shifted.getUTCDate(),
+      0,
+      0,
+      0,
+      0,
+    ) -
+      offsetMinutes * 60 * 1000,
+  );
+}
+
+function getPreviousLocalDayRange(now: Date, offsetMinutes = SHANGHAI_OFFSET_MINUTES) {
+  const currentDayStart = toLocalDayStartUtc(now, offsetMinutes);
+  const previousDayStart = new Date(currentDayStart.getTime() - 24 * 60 * 60 * 1000);
+
+  return {
+    statementDate: previousDayStart,
+    periodStartAt: previousDayStart,
+    periodEndAt: currentDayStart,
+  };
+}
+
+function buildDailySettlementFilters(): ReportFilters {
+  return {
+    queryType: "traffic",
+    timeRange: "yesterday",
+    area: "all",
+    timeZone: "Asia/Shanghai",
+    timeZoneOffsetMinutes: SHANGHAI_OFFSET_MINUTES,
+    locations: [],
+  };
+}
+
+function getCycleRangeForDate(date: Date, renewalDay: number | null, offsetMinutes = SHANGHAI_OFFSET_MINUTES) {
+  const cycle = getCurrentBillingCycleMeta(renewalDay, "zh-CN", date, offsetMinutes);
+  const cycleStartAt = new Date(
+    Date.UTC(cycle.cycleStartYear, cycle.cycleStartMonth - 1, cycle.cycleStartDay, 0, 0, 0, 0) -
+      offsetMinutes * 60 * 1000,
+  );
+  const nextMonthYear = cycle.cycleStartMonth === 12 ? cycle.cycleStartYear + 1 : cycle.cycleStartYear;
+  const nextMonth = cycle.cycleStartMonth === 12 ? 1 : cycle.cycleStartMonth + 1;
+  const nextRenewalDay = Math.min(cycle.normalizedRenewalDay, getDaysInMonth(nextMonthYear, nextMonth));
+  const cycleEndAt = new Date(
+    Date.UTC(nextMonthYear, nextMonth - 1, nextRenewalDay, 0, 0, 0, 0) -
+      offsetMinutes * 60 * 1000,
+  );
+
+  return { cycleStartAt, cycleEndAt };
+}
+
+function getReportTrafficGb(report: LiveDomainReportData) {
+  return roundGb(report.trafficTrend.reduce((sum, point) => sum + point.value, 0));
+}
+
+function getStatementStatusFromReport(
+  reportResult: Awaited<ReturnType<typeof buildAllDomainsTrafficReport>>,
+  totalDomainCount: number,
+): SettlementStatementStatus {
+  if (
+    (reportResult.report || reportResult.failureReason === "empty") &&
+    reportResult.matchedDomainCount === totalDomainCount
+  ) {
+    return "settled";
+  }
+
+  if (reportResult.matchedDomainCount > 0) {
+    return "partial";
+  }
+
+  return "failed";
+}
+
+async function ensureCustomerBalanceAccount(tx: PrismaTx, customerId: string) {
+  return tx.customerBalanceAccount.upsert({
+    where: { customerId },
+    update: {},
+    create: { customerId },
+  });
+}
+
+async function createBalanceLedgerEntry(
+  tx: PrismaTx,
+  input: {
+    accountId: string;
+    customerId: string;
+    entryType: SettlementLedgerEntryType;
+    direction: "credit" | "debit";
+    amountUsd: number;
+    rechargeDeltaUsd?: number;
+    monthlyGiftDeltaUsd?: number;
+    cumulativeGiftDeltaUsd?: number;
+    balanceAfterRechargeUsd: number;
+    balanceAfterMonthlyGiftUsd: number;
+    balanceAfterCumulativeGiftUsd: number;
+    cycleStartAt?: Date | null;
+    cycleEndAt?: Date | null;
+    effectiveAt?: Date | null;
+    note?: string;
+    referenceType?: string;
+    referenceId?: string;
+    createdByUsername?: string | null;
+  },
+) {
+  return tx.balanceLedgerEntry.create({
+    data: {
+      customerBalanceAccountId: input.accountId,
+      customerId: input.customerId,
+      entryType: input.entryType,
+      direction: input.direction,
+      amountUsd: roundUsd(input.amountUsd),
+      rechargeDeltaUsd: roundUsd(input.rechargeDeltaUsd ?? 0),
+      monthlyGiftDeltaUsd: roundUsd(input.monthlyGiftDeltaUsd ?? 0),
+      cumulativeGiftDeltaUsd: roundUsd(input.cumulativeGiftDeltaUsd ?? 0),
+      balanceAfterRechargeUsd: roundUsd(input.balanceAfterRechargeUsd),
+      balanceAfterMonthlyGiftUsd: roundUsd(input.balanceAfterMonthlyGiftUsd),
+      balanceAfterCumulativeGiftUsd: roundUsd(input.balanceAfterCumulativeGiftUsd),
+      cycleStartAt: input.cycleStartAt ?? null,
+      cycleEndAt: input.cycleEndAt ?? null,
+      effectiveAt: input.effectiveAt ?? null,
+      note: input.note ?? "",
+      referenceType: input.referenceType,
+      referenceId: input.referenceId,
+      createdByUsername: input.createdByUsername ?? null,
+    },
+  });
+}
+
+export async function createManualSettlementBalanceEntry(input: {
+  adminSession: AdminSession;
+  customerId: string;
+  adjustmentType: SettlementAdjustmentType;
+  amountUsd: number;
+  note?: string;
+}) {
+  const customer = await getCustomerForAdmin(input.customerId, input.adminSession);
+  if (!customer) {
+    throw new Error("CUSTOMER_NOT_FOUND");
+  }
+
+  const amountUsd = roundUsd(input.amountUsd);
+  if (amountUsd <= 0) {
+    throw new Error("INVALID_SETTLEMENT_AMOUNT");
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const account = await ensureCustomerBalanceAccount(tx, customer.id);
+    let rechargeBalanceUsd = roundUsd(account.rechargeBalanceUsd);
+    let monthlyGiftBalanceUsd = roundUsd(account.monthlyGiftBalanceUsd);
+    let cumulativeGiftBalanceUsd = roundUsd(account.cumulativeGiftBalanceUsd);
+    let entryType: SettlementLedgerEntryType;
+    let rechargeDeltaUsd = 0;
+
+    if (input.adjustmentType === "recharge") {
+      rechargeBalanceUsd = roundUsd(rechargeBalanceUsd + amountUsd);
+      rechargeDeltaUsd = amountUsd;
+      entryType = "manual_recharge";
+    } else {
+      if (amountUsd > rechargeBalanceUsd) {
+        throw new Error("INSUFFICIENT_RECHARGE_BALANCE");
+      }
+      rechargeBalanceUsd = roundUsd(rechargeBalanceUsd - amountUsd);
+      rechargeDeltaUsd = -amountUsd;
+      entryType = "manual_writeoff";
+    }
+
+    await tx.customerBalanceAccount.update({
+      where: { id: account.id },
+      data: {
+        rechargeBalanceUsd,
+        monthlyGiftBalanceUsd,
+        cumulativeGiftBalanceUsd,
+      },
+    });
+
+    const ledgerEntry = await createBalanceLedgerEntry(tx, {
+      accountId: account.id,
+      customerId: customer.id,
+      entryType,
+      direction: input.adjustmentType === "recharge" ? "credit" : "debit",
+      amountUsd,
+      rechargeDeltaUsd,
+      balanceAfterRechargeUsd: rechargeBalanceUsd,
+      balanceAfterMonthlyGiftUsd: monthlyGiftBalanceUsd,
+      balanceAfterCumulativeGiftUsd: cumulativeGiftBalanceUsd,
+      note: input.note?.trim() || "",
+      createdByUsername: input.adminSession.username,
+      referenceType: "manual_settlement_adjustment",
+    });
+
+    return {
+      customerId: customer.id,
+      customerName: customer.name,
+      ledgerEntryId: ledgerEntry.id,
+      entryType,
+      amountUsd,
+      rechargeBalanceUsd,
+      monthlyGiftBalanceUsd,
+      cumulativeGiftBalanceUsd,
+      totalBalanceUsd: getTotalBalanceUsd({
+        rechargeBalanceUsd,
+        monthlyGiftBalanceUsd,
+        cumulativeGiftBalanceUsd,
+      }),
+    };
+  });
+}
+
+export async function getSettlementCenterView(
+  locale: Locale,
+  adminSession: AdminSession,
+): Promise<SettlementCenterView> {
+  const customers = (await getCustomersForAdmin(adminSession)).map(toCustomerRecord);
+  if (customers.length === 0) {
+    return {
+      totalCustomers: 0,
+      totalBalanceUsd: 0,
+      settledYesterdayCount: 0,
+      pendingStatementCount: 0,
+      customers: [],
+      recentStatements: [],
+      recentLedgerEntries: [],
+    };
+  }
+
+  const customerIds = customers.map((customer) => customer.id);
+  const yesterdayStatementDate = getPreviousLocalDayRange(new Date()).statementDate;
+  const [accounts, yesterdayStatements, recentStatements, recentLedgerEntries] = await Promise.all([
+    prisma.customerBalanceAccount.findMany({
+      where: { customerId: { in: customerIds } },
+    }),
+    prisma.billingStatement.findMany({
+      where: {
+        customerId: { in: customerIds },
+        statementType: "daily_charge",
+        statementDate: yesterdayStatementDate,
+      },
+      orderBy: [{ customerId: "asc" }, { updatedAt: "desc" }],
+      distinct: ["customerId"],
+    }),
+    prisma.billingStatement.findMany({
+      where: { customerId: { in: customerIds } },
+      orderBy: [{ statementDate: "desc" }, { createdAt: "desc" }],
+      take: 20,
+    }),
+    prisma.balanceLedgerEntry.findMany({
+      where: {
+        customerId: { in: customerIds },
+        entryType: {
+          in: ["manual_recharge", "manual_writeoff"],
+        },
+      },
+      orderBy: [{ createdAt: "desc" }],
+      take: 30,
+    }),
+  ]);
+
+  const accountMap = new Map(accounts.map((account) => [account.customerId, account]));
+  const yesterdayStatementMap = new Map(
+    yesterdayStatements.map((statement) => [statement.customerId, statement]),
+  );
+  const customerNameMap = new Map(customers.map((customer) => [customer.id, customer.name]));
+
+  function toSettlementStatementRow(statement: (typeof recentStatements)[number]): SettlementStatementRow {
+    return {
+      id: statement.id,
+      customerId: statement.customerId,
+      customerName: customerNameMap.get(statement.customerId) ?? statement.customerId,
+      statementDate: formatAdminAccessLogDate(statement.statementDate, locale),
+      statementType: statement.statementType as SettlementStatementType,
+      trafficCostUsd: roundUsd(statement.trafficCostUsd),
+      deductedUsd: roundUsd(
+        statement.monthlyGiftDeductedUsd +
+          statement.cumulativeGiftDeductedUsd +
+          statement.rechargeDeductedUsd,
+      ),
+      remainingAmountUsd: roundUsd(statement.remainingAmountUsd),
+      status: statement.status as SettlementStatementStatus,
+      updatedAt: formatAdminAccessLogDate(statement.updatedAt, locale),
+    };
+  }
+
+  function toSettlementLedgerEntryRow(
+    entry: (typeof recentLedgerEntries)[number],
+  ): SettlementLedgerEntryRow {
+    return {
+      id: entry.id,
+      customerId: entry.customerId,
+      customerName: customerNameMap.get(entry.customerId) ?? entry.customerId,
+      entryType: entry.entryType as SettlementLedgerEntryType,
+      direction: entry.direction as "credit" | "debit",
+      amountUsd: roundUsd(entry.amountUsd),
+      balanceAfterTotalUsd: getTotalBalanceUsd({
+        rechargeBalanceUsd: entry.balanceAfterRechargeUsd,
+        monthlyGiftBalanceUsd: entry.balanceAfterMonthlyGiftUsd,
+        cumulativeGiftBalanceUsd: entry.balanceAfterCumulativeGiftUsd,
+      }),
+      note: entry.note,
+      createdByUsername: entry.createdByUsername,
+      createdAt: formatAdminAccessLogDate(entry.createdAt, locale),
+    };
+  }
+
+  return {
+    totalCustomers: customers.length,
+    totalBalanceUsd: roundUsd(
+      accounts.reduce(
+        (sum, account) =>
+          sum +
+          getTotalBalanceUsd({
+            rechargeBalanceUsd: account.rechargeBalanceUsd,
+            monthlyGiftBalanceUsd: account.monthlyGiftBalanceUsd,
+            cumulativeGiftBalanceUsd: account.cumulativeGiftBalanceUsd,
+          }),
+        0,
+      ),
+    ),
+    settledYesterdayCount: yesterdayStatements.filter((statement) => statement.status === "settled")
+      .length,
+    pendingStatementCount: yesterdayStatements.filter((statement) => statement.status !== "settled")
+      .length,
+    customers: customers.map((customer) => {
+      const account = accountMap.get(customer.id);
+      const yesterdayStatement = yesterdayStatementMap.get(customer.id);
+      const rechargeBalanceUsd = roundUsd(account?.rechargeBalanceUsd ?? 0);
+      const monthlyGiftBalanceUsd = roundUsd(account?.monthlyGiftBalanceUsd ?? 0);
+      const cumulativeGiftBalanceUsd = roundUsd(account?.cumulativeGiftBalanceUsd ?? 0);
+
+      return {
+        customerId: customer.id,
+        customerName: customer.name,
+        rechargeBalanceUsd,
+        monthlyGiftBalanceUsd,
+        cumulativeGiftBalanceUsd,
+        totalBalanceUsd: getTotalBalanceUsd({
+          rechargeBalanceUsd,
+          monthlyGiftBalanceUsd,
+          cumulativeGiftBalanceUsd,
+        }),
+        yesterdayStatus:
+          (yesterdayStatement?.status as SettlementStatementStatus | undefined) ?? "pending",
+        lastUpdatedAt: account?.updatedAt ? formatAdminAccessLogDate(account.updatedAt, locale) : null,
+      };
+    }),
+    recentStatements: recentStatements.map(toSettlementStatementRow),
+    recentLedgerEntries: recentLedgerEntries.map(toSettlementLedgerEntryRow),
+  };
+}
+
+export async function getSettlementCustomerDetailView(
+  locale: Locale,
+  adminSession: AdminSession,
+  customerId: string,
+): Promise<SettlementCustomerDetailView | null> {
+  const customer = await getCustomerForAdmin(customerId, adminSession);
+  if (!customer) {
+    return null;
+  }
+
+  const [account, ledgerEntries, statements] = await Promise.all([
+    prisma.customerBalanceAccount.findUnique({
+      where: { customerId: customer.id },
+    }),
+    prisma.balanceLedgerEntry.findMany({
+      where: { customerId: customer.id },
+      orderBy: [{ createdAt: "desc" }],
+      take: 100,
+    }),
+    prisma.billingStatement.findMany({
+      where: { customerId: customer.id },
+      orderBy: [{ statementDate: "desc" }, { createdAt: "desc" }],
+      take: 100,
+    }),
+  ]);
+
+  const rechargeBalanceUsd = roundUsd(account?.rechargeBalanceUsd ?? 0);
+  const monthlyGiftBalanceUsd = roundUsd(account?.monthlyGiftBalanceUsd ?? 0);
+  const cumulativeGiftBalanceUsd = roundUsd(account?.cumulativeGiftBalanceUsd ?? 0);
+
+  return {
+    customerId: customer.id,
+    customerName: customer.name,
+    rechargeBalanceUsd,
+    monthlyGiftBalanceUsd,
+    cumulativeGiftBalanceUsd,
+    totalBalanceUsd: getTotalBalanceUsd({
+      rechargeBalanceUsd,
+      monthlyGiftBalanceUsd,
+      cumulativeGiftBalanceUsd,
+    }),
+    lastUpdatedAt: account?.updatedAt ? formatAdminAccessLogDate(account.updatedAt, locale) : null,
+    lastSnapshotAt: account?.lastSnapshotAt ? formatAdminAccessLogDate(account.lastSnapshotAt, locale) : null,
+    lastSettledAt: account?.lastSettledAt ? formatAdminAccessLogDate(account.lastSettledAt, locale) : null,
+    ledgerEntries: ledgerEntries.map((entry) => ({
+      id: entry.id,
+      customerId: entry.customerId,
+      customerName: customer.name,
+      entryType: entry.entryType as SettlementLedgerEntryType,
+      direction: entry.direction as "credit" | "debit",
+      amountUsd: roundUsd(entry.amountUsd),
+      balanceAfterTotalUsd: getTotalBalanceUsd({
+        rechargeBalanceUsd: entry.balanceAfterRechargeUsd,
+        monthlyGiftBalanceUsd: entry.balanceAfterMonthlyGiftUsd,
+        cumulativeGiftBalanceUsd: entry.balanceAfterCumulativeGiftUsd,
+      }),
+      note: entry.note,
+      createdByUsername: entry.createdByUsername,
+      createdAt: formatAdminAccessLogDate(entry.createdAt, locale),
+    })),
+    statements: statements.map((statement) => ({
+      id: statement.id,
+      customerId: statement.customerId,
+      customerName: customer.name,
+      statementDate: formatAdminAccessLogDate(statement.statementDate, locale),
+      statementType: statement.statementType as SettlementStatementType,
+      trafficCostUsd: roundUsd(statement.trafficCostUsd),
+      deductedUsd: roundUsd(
+        statement.monthlyGiftDeductedUsd +
+          statement.cumulativeGiftDeductedUsd +
+          statement.rechargeDeductedUsd,
+      ),
+      remainingAmountUsd: roundUsd(statement.remainingAmountUsd),
+      status: statement.status as SettlementStatementStatus,
+      updatedAt: formatAdminAccessLogDate(statement.updatedAt, locale),
+    })),
+  };
+}
+
+export async function runDailySettlementJob(now = new Date()) {
+  const customers = (await prisma.customer.findMany({
+    where: {
+      status: "正常",
+    },
+    orderBy: { updatedAt: "desc" },
+  })).map(toCustomerRecord).filter((customer) => customer.domains.length > 0);
+
+  const dailyWindow = getPreviousLocalDayRange(now);
+  const filters = buildDailySettlementFilters();
+  let settledCount = 0;
+  let partialCount = 0;
+  let failedCount = 0;
+
+  for (const customer of customers) {
+    const reportResult = await buildAllDomainsTrafficReport(customer.domains, filters, "zh-CN");
+    const status = getStatementStatusFromReport(reportResult, customer.domains.length);
+    const reportTrafficGb = reportResult.report
+      ? applyTrafficMarkupToGb(getReportTrafficGb(reportResult.report), customer.trafficMarkupPercent)
+      : 0;
+    const reportCostUsd = reportResult.report
+      ? applyTrafficMarkupToUsd(parseUsd(reportResult.report.regionalTrafficTotalCost), customer.trafficMarkupPercent)
+      : 0;
+    const failureReason =
+      status === "settled" ? null : reportResult.failureReason ?? "request_failed";
+    const detailsJson = stringifyTrafficBoardLog({
+      customerId: customer.id,
+      customerName: customer.name,
+      domains: customer.domains,
+      matchedDomainCount: reportResult.matchedDomainCount,
+      totalDomainCount: customer.domains.length,
+      failureReason,
+    });
+
+    await prisma.$transaction(async (tx) => {
+      const account = await ensureCustomerBalanceAccount(tx, customer.id);
+      await tx.customerDailySettlementSnapshot.upsert({
+        where: {
+          customerId_snapshotDate: {
+            customerId: customer.id,
+            snapshotDate: dailyWindow.statementDate,
+          },
+        },
+        update: {
+          periodStartAt: dailyWindow.periodStartAt,
+          periodEndAt: dailyWindow.periodEndAt,
+          totalTrafficGb: reportTrafficGb,
+          totalCostUsd: reportCostUsd,
+          matchedDomainCount: reportResult.matchedDomainCount,
+          totalDomainCount: customer.domains.length,
+          status,
+          failureReason,
+          detailsJson,
+        },
+        create: {
+          customerBalanceAccountId: account.id,
+          customerId: customer.id,
+          snapshotDate: dailyWindow.statementDate,
+          periodStartAt: dailyWindow.periodStartAt,
+          periodEndAt: dailyWindow.periodEndAt,
+          totalTrafficGb: reportTrafficGb,
+          totalCostUsd: reportCostUsd,
+          matchedDomainCount: reportResult.matchedDomainCount,
+          totalDomainCount: customer.domains.length,
+          status,
+          failureReason,
+          detailsJson,
+        },
+      });
+
+      if (status !== "settled") {
+        await tx.customerBalanceAccount.update({
+          where: { id: account.id },
+          data: {
+            lastSnapshotAt: now,
+          },
+        });
+
+        await tx.billingStatement.upsert({
+          where: {
+            customerId_statementType_statementDate: {
+              customerId: customer.id,
+              statementType: "daily_charge",
+              statementDate: dailyWindow.statementDate,
+            },
+          },
+          update: {
+            periodStartAt: dailyWindow.periodStartAt,
+            periodEndAt: dailyWindow.periodEndAt,
+            totalTrafficGb: reportTrafficGb,
+            trafficCostUsd: reportCostUsd,
+            matchedDomainCount: reportResult.matchedDomainCount,
+            totalDomainCount: customer.domains.length,
+            status,
+            failureReason,
+            summaryJson: detailsJson,
+            note:
+              status === "partial"
+                ? "Not all domains returned billable data. Auto deduction is skipped."
+                : "Alibaba Cloud data is unavailable for this T+1 run. Auto deduction is skipped.",
+            settledAt: null,
+          },
+          create: {
+            customerBalanceAccountId: account.id,
+            customerId: customer.id,
+            statementType: "daily_charge",
+            statementDate: dailyWindow.statementDate,
+            periodStartAt: dailyWindow.periodStartAt,
+            periodEndAt: dailyWindow.periodEndAt,
+            totalTrafficGb: reportTrafficGb,
+            trafficCostUsd: reportCostUsd,
+            matchedDomainCount: reportResult.matchedDomainCount,
+            totalDomainCount: customer.domains.length,
+            status,
+            failureReason,
+            summaryJson: detailsJson,
+            note:
+              status === "partial"
+                ? "Not all domains returned billable data. Auto deduction is skipped."
+                : "Alibaba Cloud data is unavailable for this T+1 run. Auto deduction is skipped.",
+          },
+        });
+        return;
+      }
+
+      const existingStatement = await tx.billingStatement.findUnique({
+        where: {
+          customerId_statementType_statementDate: {
+            customerId: customer.id,
+            statementType: "daily_charge",
+            statementDate: dailyWindow.statementDate,
+          },
+        },
+      });
+
+      if (existingStatement?.status === "settled") {
+        await tx.customerBalanceAccount.update({
+          where: { id: account.id },
+          data: {
+            lastSnapshotAt: now,
+          },
+        });
+        return;
+      }
+
+      const { cycleStartAt, cycleEndAt } = getCycleRangeForDate(dailyWindow.periodEndAt, customer.renewalDay);
+      let rechargeBalanceUsd = roundUsd(account.rechargeBalanceUsd);
+      let monthlyGiftBalanceUsd = roundUsd(account.monthlyGiftBalanceUsd);
+      let cumulativeGiftBalanceUsd = roundUsd(account.cumulativeGiftBalanceUsd);
+
+      const existingMonthlyGrant = await tx.balanceLedgerEntry.findFirst({
+        where: {
+          customerId: customer.id,
+          entryType: "monthly_gift_grant",
+          cycleStartAt,
+        },
+      });
+      if (!existingMonthlyGrant && customer.monthlyGiftCreditUsd) {
+        monthlyGiftBalanceUsd = roundUsd(monthlyGiftBalanceUsd + customer.monthlyGiftCreditUsd);
+        await createBalanceLedgerEntry(tx, {
+          accountId: account.id,
+          customerId: customer.id,
+          entryType: "monthly_gift_grant",
+          direction: "credit",
+          amountUsd: customer.monthlyGiftCreditUsd,
+          monthlyGiftDeltaUsd: customer.monthlyGiftCreditUsd,
+          balanceAfterRechargeUsd: rechargeBalanceUsd,
+          balanceAfterMonthlyGiftUsd: monthlyGiftBalanceUsd,
+          balanceAfterCumulativeGiftUsd: cumulativeGiftBalanceUsd,
+          cycleStartAt,
+          cycleEndAt,
+          effectiveAt: cycleStartAt,
+          note: "Auto grant at billing cycle start based on the customer's cycle gift credit setting.",
+          referenceType: "customer_cycle",
+        });
+      }
+
+      const existingCumulativeGrant = await tx.balanceLedgerEntry.findFirst({
+        where: {
+          customerId: customer.id,
+          entryType: "cumulative_gift_grant",
+          referenceType: "customer_config",
+        },
+      });
+      if (!existingCumulativeGrant && customer.cumulativeGiftCreditUsd) {
+        cumulativeGiftBalanceUsd = roundUsd(
+          cumulativeGiftBalanceUsd + customer.cumulativeGiftCreditUsd,
+        );
+        await createBalanceLedgerEntry(tx, {
+          accountId: account.id,
+          customerId: customer.id,
+          entryType: "cumulative_gift_grant",
+          direction: "credit",
+          amountUsd: customer.cumulativeGiftCreditUsd,
+          cumulativeGiftDeltaUsd: customer.cumulativeGiftCreditUsd,
+          balanceAfterRechargeUsd: rechargeBalanceUsd,
+          balanceAfterMonthlyGiftUsd: monthlyGiftBalanceUsd,
+          balanceAfterCumulativeGiftUsd: cumulativeGiftBalanceUsd,
+          effectiveAt: cycleStartAt,
+          note: "Initial cumulative gift credit from customer configuration.",
+          referenceType: "customer_config",
+        });
+      }
+
+      let remainingAmountUsd = roundUsd(reportCostUsd);
+      const monthlyGiftDeductedUsd = roundUsd(Math.min(monthlyGiftBalanceUsd, remainingAmountUsd));
+      monthlyGiftBalanceUsd = roundUsd(monthlyGiftBalanceUsd - monthlyGiftDeductedUsd);
+      remainingAmountUsd = roundUsd(remainingAmountUsd - monthlyGiftDeductedUsd);
+
+      const cumulativeGiftDeductedUsd = roundUsd(
+        Math.min(cumulativeGiftBalanceUsd, remainingAmountUsd),
+      );
+      cumulativeGiftBalanceUsd = roundUsd(cumulativeGiftBalanceUsd - cumulativeGiftDeductedUsd);
+      remainingAmountUsd = roundUsd(remainingAmountUsd - cumulativeGiftDeductedUsd);
+
+      const rechargeDeductedUsd = roundUsd(Math.min(rechargeBalanceUsd, remainingAmountUsd));
+      rechargeBalanceUsd = roundUsd(rechargeBalanceUsd - rechargeDeductedUsd);
+      remainingAmountUsd = roundUsd(remainingAmountUsd - rechargeDeductedUsd);
+
+      const statement = await tx.billingStatement.upsert({
+        where: {
+          customerId_statementType_statementDate: {
+            customerId: customer.id,
+            statementType: "daily_charge",
+            statementDate: dailyWindow.statementDate,
+          },
+        },
+        update: {
+          cycleStartAt,
+          cycleEndAt,
+          periodStartAt: dailyWindow.periodStartAt,
+          periodEndAt: dailyWindow.periodEndAt,
+          totalTrafficGb: reportTrafficGb,
+          trafficCostUsd: reportCostUsd,
+          monthlyGiftDeductedUsd,
+          cumulativeGiftDeductedUsd,
+          rechargeDeductedUsd,
+          remainingAmountUsd,
+          matchedDomainCount: reportResult.matchedDomainCount,
+          totalDomainCount: customer.domains.length,
+          status: "settled",
+          failureReason: null,
+          summaryJson: detailsJson,
+          note: remainingAmountUsd > 0 ? "Insufficient balance after automatic deduction." : "",
+          settledAt: now,
+        },
+        create: {
+          customerBalanceAccountId: account.id,
+          customerId: customer.id,
+          statementType: "daily_charge",
+          statementDate: dailyWindow.statementDate,
+          cycleStartAt,
+          cycleEndAt,
+          periodStartAt: dailyWindow.periodStartAt,
+          periodEndAt: dailyWindow.periodEndAt,
+          totalTrafficGb: reportTrafficGb,
+          trafficCostUsd: reportCostUsd,
+          monthlyGiftDeductedUsd,
+          cumulativeGiftDeductedUsd,
+          rechargeDeductedUsd,
+          remainingAmountUsd,
+          matchedDomainCount: reportResult.matchedDomainCount,
+          totalDomainCount: customer.domains.length,
+          status: "settled",
+          failureReason: null,
+          summaryJson: detailsJson,
+          note: remainingAmountUsd > 0 ? "Insufficient balance after automatic deduction." : "",
+          settledAt: now,
+        },
+      });
+
+      await tx.customerBalanceAccount.update({
+        where: { id: account.id },
+        data: {
+          rechargeBalanceUsd,
+          monthlyGiftBalanceUsd,
+          cumulativeGiftBalanceUsd,
+          lastSnapshotAt: now,
+          lastSettledAt: now,
+        },
+      });
+
+      await createBalanceLedgerEntry(tx, {
+        accountId: account.id,
+        customerId: customer.id,
+        entryType: "traffic_charge",
+        direction: "debit",
+        amountUsd: monthlyGiftDeductedUsd + cumulativeGiftDeductedUsd + rechargeDeductedUsd,
+        rechargeDeltaUsd: rechargeDeductedUsd > 0 ? -rechargeDeductedUsd : 0,
+        monthlyGiftDeltaUsd: monthlyGiftDeductedUsd > 0 ? -monthlyGiftDeductedUsd : 0,
+        cumulativeGiftDeltaUsd: cumulativeGiftDeductedUsd > 0 ? -cumulativeGiftDeductedUsd : 0,
+        balanceAfterRechargeUsd: rechargeBalanceUsd,
+        balanceAfterMonthlyGiftUsd: monthlyGiftBalanceUsd,
+        balanceAfterCumulativeGiftUsd: cumulativeGiftBalanceUsd,
+        cycleStartAt,
+        cycleEndAt,
+        effectiveAt: dailyWindow.periodEndAt,
+        note:
+          remainingAmountUsd > 0
+            ? `Daily traffic charge settled with outstanding ${remainingAmountUsd.toFixed(2)} USD.`
+            : "Daily traffic charge settled automatically.",
+        referenceType: "billing_statement",
+        referenceId: statement.id,
+      });
+    });
+
+    if (status === "settled") {
+      settledCount += 1;
+    } else if (status === "partial") {
+      partialCount += 1;
+    } else {
+      failedCount += 1;
+    }
+  }
+
+  return {
+    statementDate: dailyWindow.statementDate.toISOString(),
+    totalCustomers: customers.length,
+    settledCount,
+    partialCount,
+    failedCount,
   };
 }
 

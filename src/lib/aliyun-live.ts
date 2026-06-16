@@ -31,6 +31,7 @@ export type LiveDomainReportData = {
   audienceUsageTable: TableRow[];
   regionalTrafficTable: RegionTrafficRow[];
   regionalTrafficTotalCost: string;
+  regionalTrafficComplete: boolean;
   syncText: string;
 };
 
@@ -50,11 +51,27 @@ export type LiveDomainTrafficSummaryResult = {
   reason: LiveDomainReportFailureReason | null;
 };
 
+export type LiveDomainRegionalTrafficSummaryData = {
+  totalTrafficGb: number;
+  totalCostUsd: number;
+};
+
+export type LiveDomainRegionalTrafficSummaryResult = {
+  data: LiveDomainRegionalTrafficSummaryData | null;
+  reason: LiveDomainReportFailureReason | null;
+};
+
 type RegionalTrafficSummary = {
   code: string;
   label: string;
   trafficBytes: number;
   sortOrder: number;
+};
+
+type RegionalTrafficFetchResult = {
+  summaries: RegionalTrafficSummary[];
+  complete: boolean;
+  failureReason: LiveDomainReportFailureReason | null;
 };
 
 const ALIYUN_TRAFFIC_AREAS = [
@@ -653,6 +670,7 @@ function normalizeAnalytics(
   pvUvPoints: AnalyticsPoint[],
   pvUvIntervalSeconds: number,
   regionalTrafficSummaries: RegionalTrafficSummary[],
+  regionalTrafficComplete: boolean,
 ): LiveDomainReportData {
   const trafficDisplayPoints = buildContinuousAnalyticsPoints(
     sortAnalyticsPoints(trafficPoints),
@@ -748,14 +766,18 @@ function normalizeAnalytics(
       timeZoneOffsetMinutes,
     ),
     audienceUsageTable: buildAudienceUsageTable(locale, pvUvDisplayPoints, timeZoneOffsetMinutes),
-    regionalTrafficTable: buildRegionalTrafficTable(locale, regionalTrafficSummaries),
-    regionalTrafficTotalCost: formatUsd(
-      regionalTrafficSummaries.reduce((sum, item) => {
-        const pricePerTb = REGIONAL_PRICE_PER_TB_USD[item.code as keyof typeof REGIONAL_PRICE_PER_TB_USD] ?? 0;
-        return sum + (item.trafficBytes / 1024 ** 4) * pricePerTb;
-      }, 0),
-      locale,
-    ),
+    regionalTrafficTable: regionalTrafficComplete ? buildRegionalTrafficTable(locale, regionalTrafficSummaries) : [],
+    regionalTrafficTotalCost: regionalTrafficComplete
+      ? formatUsd(
+          regionalTrafficSummaries.reduce((sum, item) => {
+            const pricePerTb =
+              REGIONAL_PRICE_PER_TB_USD[item.code as keyof typeof REGIONAL_PRICE_PER_TB_USD] ?? 0;
+            return sum + (item.trafficBytes / 1024 ** 4) * pricePerTb;
+          }, 0),
+          locale,
+        )
+      : "--",
+    regionalTrafficComplete,
   };
 }
 
@@ -768,9 +790,13 @@ async function fetchRegionalTrafficSummaries(
   regionId: string,
   locale: Locale,
   requestDebug: Record<string, unknown>,
-) {
-  const settledResponses = await Promise.allSettled(
-    ALIYUN_TRAFFIC_AREAS.map(async (area, sortOrder) => {
+): Promise<RegionalTrafficFetchResult> {
+  const summaries: RegionalTrafficSummary[] = [];
+  let complete = true;
+  let failureReason: LiveDomainReportFailureReason | null = null;
+
+  for (const [sortOrder, area] of ALIYUN_TRAFFIC_AREAS.entries()) {
+    try {
       const response = await withAliyunRetry(
         `regionalTraffic:${area.code}`,
         {
@@ -795,30 +821,107 @@ async function fetchRegionalTrafficSummaries(
 
       const modules = response.body?.usageDataPerInterval?.dataModule ?? [];
 
-      return {
+      summaries.push({
         code: area.code,
         label: area.label[locale],
         trafficBytes: modules.reduce((sum, item) => sum + parseNumericValue(item.value), 0),
         sortOrder,
-      } satisfies RegionalTrafficSummary;
-    }),
+      } satisfies RegionalTrafficSummary);
+    } catch (error) {
+      complete = false;
+      failureReason = isAliyunDomainNotFoundError(error) ? "domain_not_found" : "request_failed";
+      console.warn(
+        `Alibaba Cloud Live API regional traffic request failed ${stringifyDebugPayload({
+          ...requestDebug,
+          regionalArea: area.code,
+          error: simplifyError(error),
+        })}`,
+      );
+    }
+  }
+
+  return {
+    summaries,
+    complete,
+    failureReason,
+  };
+}
+
+export async function fetchLiveDomainRegionalTrafficSummaryResult(
+  domain: string,
+  filters: ReportFilters,
+  locale: Locale,
+): Promise<LiveDomainRegionalTrafficSummaryResult> {
+  const client = getAliyunLiveClient();
+
+  if (!client || !domain) {
+    return {
+      data: null,
+      reason: "request_failed",
+    };
+  }
+
+  const window = resolveReportWindow(filters);
+  const regionId = getEnv("ALIYUN_LIVE_REGION_ID") || "cn-shanghai";
+  const endpoint = getAliyunLiveEndpoint();
+  const requestDebug = {
+    domain,
+    regionId,
+    endpoint,
+    queryType: filters.queryType ?? "traffic",
+    timeRange: filters.timeRange,
+    timeZone: filters.timeZone ?? null,
+    timeZoneOffsetMinutes: filters.timeZoneOffsetMinutes ?? null,
+    startTime: window.startTime,
+    endTime: window.endTime,
+    interval: window.interval,
+    summaryMode: "regional-only",
+  };
+
+  console.info(
+    `Alibaba Cloud Live regional summary request started ${stringifyDebugPayload(requestDebug)}`,
   );
 
-  return settledResponses.flatMap((result, index) => {
-    if (result.status === "fulfilled") {
-      return [result.value];
-    }
+  const regionalTrafficResult = await fetchRegionalTrafficSummaries(
+    client,
+    domain,
+    window.startTime,
+    window.endTime,
+    window.interval,
+    regionId,
+    locale,
+    requestDebug,
+  );
 
-    console.warn(
-      `Alibaba Cloud Live API regional traffic request failed ${stringifyDebugPayload({
-        ...requestDebug,
-        regionalArea: ALIYUN_TRAFFIC_AREAS[index]?.code ?? null,
-        error: simplifyError(result.reason),
-      })}`,
-    );
+  console.info(
+    `Alibaba Cloud Live regional summary request finished ${stringifyDebugPayload({
+      ...requestDebug,
+      complete: regionalTrafficResult.complete,
+      failureReason: regionalTrafficResult.failureReason,
+      areaCount: regionalTrafficResult.summaries.length,
+    })}`,
+  );
 
-    return [];
-  });
+  if (!regionalTrafficResult.complete) {
+    return {
+      data: null,
+      reason: regionalTrafficResult.failureReason ?? "request_failed",
+    };
+  }
+
+  const totalTrafficBytes = regionalTrafficResult.summaries.reduce((sum, item) => sum + item.trafficBytes, 0);
+  const totalCostUsd = regionalTrafficResult.summaries.reduce((sum, item) => {
+    const pricePerTb = REGIONAL_PRICE_PER_TB_USD[item.code as keyof typeof REGIONAL_PRICE_PER_TB_USD] ?? 0;
+    return sum + (item.trafficBytes / 1024 ** 4) * pricePerTb;
+  }, 0);
+
+  return {
+    data: {
+      totalTrafficGb: Number((totalTrafficBytes / 1024 ** 3).toFixed(2)),
+      totalCostUsd: Number(totalCostUsd.toFixed(2)),
+    },
+    reason: null,
+  };
 }
 
 export async function fetchLiveDomainReportResult(
@@ -862,7 +965,7 @@ export async function fetchLiveDomainReportResult(
 
   try {
     const shouldFetchRegionalTraffic = (filters.queryType ?? "traffic") === "traffic";
-    const [trafficResponse, bandwidthResponse, pvUvResponse, regionalTrafficSummaries] = await Promise.all([
+    const [trafficResponse, bandwidthResponse, pvUvResponse, regionalTrafficResult] = await Promise.all([
       withAliyunRetry("traffic", requestDebug, () =>
         useLocationFilter
           ? client.describeLiveDomainTrafficData(
@@ -935,8 +1038,14 @@ export async function fetchLiveDomainReportResult(
             locale,
             requestDebug,
           )
-        : Promise.resolve([] as RegionalTrafficSummary[]),
+        : Promise.resolve({
+            summaries: [] as RegionalTrafficSummary[],
+            complete: true,
+            failureReason: null,
+          } satisfies RegionalTrafficFetchResult),
     ]);
+    const regionalTrafficSummaries = regionalTrafficResult.summaries;
+    const regionalTrafficComplete = regionalTrafficResult.complete;
 
     const trafficPointsMap = new Map<string, AnalyticsPoint>();
     const bandwidthPointsMap = new Map<string, AnalyticsPoint>();
@@ -1068,6 +1177,7 @@ export async function fetchLiveDomainReportResult(
         pvUvPoints,
         pvUvIntervalSeconds,
         regionalTrafficSummaries,
+        regionalTrafficComplete,
       ),
       reason: null,
     };

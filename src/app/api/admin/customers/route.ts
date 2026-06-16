@@ -41,7 +41,9 @@ export async function POST(request: Request) {
     accountManagerEmail:
       typeof body?.accountManagerEmail === "string" ? body.accountManagerEmail.trim() : "",
     renewalDay: typeof body?.renewalDay === "number" ? body.renewalDay : null,
-    monthlyGiftTrafficGb: typeof body?.monthlyGiftTrafficGb === "number" ? body.monthlyGiftTrafficGb : null,
+    monthlyGiftCreditUsd: typeof body?.monthlyGiftCreditUsd === "number" ? body.monthlyGiftCreditUsd : null,
+    cumulativeGiftCreditUsd:
+      typeof body?.cumulativeGiftCreditUsd === "number" ? body.cumulativeGiftCreditUsd : null,
     trafficMarkupPercent:
       typeof body?.trafficMarkupPercent === "number"
         ? body.trafficMarkupPercent

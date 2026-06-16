@@ -35,11 +35,16 @@ model Customer {
   notes               String
   accountManagerEmail String?
   renewalDay          Int?
-  monthlyGiftTrafficGb Float?
-  trafficMarkupPercent Float?
+  monthlyGiftCreditUsd Float?
+  cumulativeGiftCreditUsd Float?
+  trafficMarkupPercent  Float?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
   reportAccessLogs    CustomerReportAccessLog[]
+  balanceAccount      CustomerBalanceAccount?
+  balanceLedgerEntries BalanceLedgerEntry[]
+  dailySettlementSnapshots CustomerDailySettlementSnapshot[]
+  billingStatements   BillingStatement[]
 }
 
 model CustomerReportAccessLog {
@@ -81,4 +86,106 @@ model AnnouncementDismissal {
 
   @@unique([announcementId, ipAddress])
   @@index([ipAddress, dismissedAt])
+}
+
+model CustomerBalanceAccount {
+  id                       String                           @id @default(cuid())
+  customerId               String                           @unique
+  rechargeBalanceUsd       Float                            @default(0)
+  monthlyGiftBalanceUsd    Float                            @default(0)
+  cumulativeGiftBalanceUsd Float                            @default(0)
+  lastSnapshotAt           DateTime?
+  lastSettledAt            DateTime?
+  createdAt                DateTime                         @default(now())
+  updatedAt                DateTime                         @updatedAt
+  customer                 Customer                         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  ledgerEntries            BalanceLedgerEntry[]
+  dailySnapshots           CustomerDailySettlementSnapshot[]
+  billingStatements        BillingStatement[]
+}
+
+model BalanceLedgerEntry {
+  id                             String                 @id @default(cuid())
+  customerBalanceAccountId       String
+  customerId                     String
+  entryType                      String
+  direction                      String
+  amountUsd                      Float
+  rechargeDeltaUsd               Float                  @default(0)
+  monthlyGiftDeltaUsd            Float                  @default(0)
+  cumulativeGiftDeltaUsd         Float                  @default(0)
+  balanceAfterRechargeUsd        Float
+  balanceAfterMonthlyGiftUsd     Float
+  balanceAfterCumulativeGiftUsd  Float
+  cycleStartAt                   DateTime?
+  cycleEndAt                     DateTime?
+  effectiveAt                    DateTime?
+  note                           String                 @default("")
+  referenceType                  String?
+  referenceId                    String?
+  createdByUsername              String?
+  createdAt                      DateTime               @default(now())
+  balanceAccount                 CustomerBalanceAccount @relation(fields: [customerBalanceAccountId], references: [id], onDelete: Cascade)
+  customer                       Customer               @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, createdAt])
+  @@index([customerId, entryType, cycleStartAt])
+  @@index([referenceType, referenceId])
+}
+
+model CustomerDailySettlementSnapshot {
+  id                       String                 @id @default(cuid())
+  customerBalanceAccountId String
+  customerId               String
+  snapshotDate             DateTime
+  periodStartAt            DateTime
+  periodEndAt              DateTime
+  totalTrafficGb           Float                  @default(0)
+  totalCostUsd             Float                  @default(0)
+  matchedDomainCount       Int                    @default(0)
+  totalDomainCount         Int                    @default(0)
+  status                   String                 @default("pending")
+  failureReason            String?
+  detailsJson              String                 @default("{}")
+  createdAt                DateTime               @default(now())
+  updatedAt                DateTime               @updatedAt
+  balanceAccount           CustomerBalanceAccount @relation(fields: [customerBalanceAccountId], references: [id], onDelete: Cascade)
+  customer                 Customer               @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, snapshotDate])
+  @@index([status, snapshotDate])
+}
+
+model BillingStatement {
+  id                       String                 @id @default(cuid())
+  customerBalanceAccountId String
+  customerId               String
+  statementType            String                 @default("daily_charge")
+  statementDate            DateTime
+  cycleStartAt             DateTime?
+  cycleEndAt               DateTime?
+  periodStartAt            DateTime
+  periodEndAt              DateTime
+  totalTrafficGb           Float                  @default(0)
+  trafficCostUsd           Float                  @default(0)
+  monthlyGiftDeductedUsd   Float                  @default(0)
+  cumulativeGiftDeductedUsd Float                 @default(0)
+  rechargeDeductedUsd      Float                  @default(0)
+  remainingAmountUsd       Float                  @default(0)
+  matchedDomainCount       Int                    @default(0)
+  totalDomainCount         Int                    @default(0)
+  status                   String                 @default("pending")
+  failureReason            String?
+  summaryJson              String                 @default("{}")
+  note                     String                 @default("")
+  settledAt                DateTime?
+  createdByUsername        String?
+  createdAt                DateTime               @default(now())
+  updatedAt                DateTime               @updatedAt
+  balanceAccount           CustomerBalanceAccount @relation(fields: [customerBalanceAccountId], references: [id], onDelete: Cascade)
+  customer                 Customer               @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, statementType, statementDate])
+  @@index([customerId, statementDate])
+  @@index([status, statementDate])
 }

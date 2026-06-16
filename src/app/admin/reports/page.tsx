@@ -1,4 +1,5 @@
 import { DashboardShell } from "@/components/dashboard-ui";
+import { buildAdminNav } from "@/lib/admin-nav";
 import { TrafficReportView } from "@/components/traffic-report-view";
 import { getTranslations } from "@/lib/i18n";
 import { getCurrentLocale } from "@/lib/locale";
@@ -17,15 +18,7 @@ export default async function AdminReportsPage({
   const t = getTranslations(locale);
   const filters = parseReportFilters(params);
   const reportRecords = await getAdminReportRecordsWithFilters(locale, adminSession, filters);
-  const nav = [
-    { label: t.adminReportsPage.nav.trafficBoard, href: "/admin/traffic-board" },
-    { label: t.adminReportsPage.nav.reports, href: "/admin/reports", active: true },
-    { label: t.adminReportsPage.nav.customers, href: "/admin/customers" },
-    { label: t.adminReportsPage.nav.announcements, href: "/admin/announcements" },
-    ...(adminSession.role === "super_admin"
-      ? [{ label: t.adminReportsPage.nav.accounts, href: "/admin/accounts" }]
-      : []),
-  ];
+  const nav = buildAdminNav(locale, adminSession, "reports");
 
   return (
     <DashboardShell

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { DataTable, MetricCard, Panel } from "@/components/dashboard-ui";
 import type {
@@ -46,10 +46,6 @@ function shouldFetchTraffic(row: Pick<TrafficBoardRow, "status" | "domainCount">
   return row.status === "正常" && row.domainCount > 0;
 }
 
-function shouldShowGiftTrafficMetrics(period: TrafficBoardPeriod) {
-  return period === "cycle" || period === "lastCycle";
-}
-
 function shouldShowGiftTrafficProjection(period: TrafficBoardPeriod) {
   return period === "cycle" || period === "lastCycle";
 }
@@ -68,11 +64,11 @@ function formatTrafficFromGb(valueGb: number, locale: Locale) {
   })} GB`;
 }
 
-function formatTrafficAllowanceFromGb(valueGb: number, locale: Locale) {
-  return `${(valueGb / 1024).toLocaleString(locale === "en" ? "en-US" : "zh-CN", {
+function formatUsdValue(valueUsd: number, locale: Locale) {
+  return `${valueUsd.toLocaleString(locale === "en" ? "en-US" : "zh-CN", {
     maximumFractionDigits: 2,
     minimumFractionDigits: 2,
-  })} TB`;
+  })} USD`;
 }
 
 function formatTrafficMarkupLabel(value: number, locale: Locale) {
@@ -84,7 +80,7 @@ function formatTrafficMarkupLabel(value: number, locale: Locale) {
 }
 
 function getRetryTrafficLabel(locale: Locale) {
-  return locale === "en" ? "Retry" : "重试";
+  return locale === "en" ? "Manual Refresh" : "手动更新";
 }
 
 export function AdminTrafficBoard({
@@ -120,6 +116,8 @@ export function AdminTrafficBoard({
   );
   const [rows, setRows] = useState<TrafficBoardRowState[]>(initialRows);
   const [trafficSortDirection, setTrafficSortDirection] = useState<TrafficSortDirection>("desc");
+  const requestQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const requestGenerationRef = useRef(0);
 
   useEffect(() => {
     setRows(initialRows);
@@ -186,6 +184,7 @@ export function AdminTrafficBoard({
             hasLiveData: payload?.hasLiveData ?? false,
             traffic: payload?.traffic ?? "--",
             trafficGb: payload?.trafficGb ?? 0,
+            trafficCost: payload?.trafficCost ?? null,
             trafficHint: payload?.trafficHint ?? null,
             durationMs: Date.now() - startedAt,
           })}`,
@@ -226,6 +225,9 @@ export function AdminTrafficBoard({
                   traffic: "--",
                   hasLiveData: false,
                   trafficGb: 0,
+                  trafficCost: null,
+                  trafficCostUsd: 0,
+                  trafficCostCanRetry: true,
                   trafficHint:
                     locale === "en"
                       ? "Alibaba Cloud query failed"
@@ -242,22 +244,48 @@ export function AdminTrafficBoard({
     [locale, view.period],
   );
 
-  useEffect(() => {
-    let cancelled = false;
+  const enqueueRowTraffic = useCallback(
+    (row: Pick<TrafficBoardRowState, "customerId" | "customerName" | "domainCount">) => {
+      const generation = requestGenerationRef.current;
+      requestQueueRef.current = requestQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          if (generation !== requestGenerationRef.current) {
+            return;
+          }
 
-    async function loadRowsSequentially() {
-      for (const row of view.rows) {
-        if (!shouldFetchTraffic(row)) {
-          continue;
-        }
-        await requestRowTraffic(row, () => cancelled);
+          await requestRowTraffic(row, () => generation !== requestGenerationRef.current);
+        });
+
+      return requestQueueRef.current;
+    },
+    [requestRowTraffic],
+  );
+
+  useEffect(() => {
+    requestGenerationRef.current += 1;
+    const generation = requestGenerationRef.current;
+    requestQueueRef.current = Promise.resolve();
+
+    for (const row of view.rows) {
+      if (!shouldFetchTraffic(row)) {
+        continue;
       }
+
+      requestQueueRef.current = requestQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          if (generation !== requestGenerationRef.current) {
+            return;
+          }
+
+          await requestRowTraffic(row, () => generation !== requestGenerationRef.current);
+        });
     }
 
-    void loadRowsSequentially();
-
     return () => {
-      cancelled = true;
+      requestGenerationRef.current += 1;
+      requestQueueRef.current = Promise.resolve();
     };
   }, [requestRowTraffic, view.rows]);
 
@@ -270,10 +298,9 @@ export function AdminTrafficBoard({
   const requestableCount = rows.filter((row) => shouldFetchTraffic(row)).length;
   const resolvedCount = rows.filter((row) => shouldFetchTraffic(row) && row.loaded).length;
   const totalTrafficGb = rows.reduce((sum, row) => sum + row.trafficGb, 0);
+  const totalTrafficCostUsd = rows.reduce((sum, row) => sum + row.trafficCostUsd, 0);
   const liveCustomerCount = rows.filter((row) => row.hasLiveData).length;
-  const showGiftTrafficMetrics = shouldShowGiftTrafficMetrics(view.period);
   const showGiftTrafficProjection = shouldShowGiftTrafficProjection(view.period);
-  const hasGiftTrafficCustomers = showGiftTrafficMetrics && rows.some((row) => Boolean(row.monthlyGiftTrafficGb));
   const projectedTrafficLabel =
     view.period === "cycle" || view.period === "lastCycle"
       ? locale === "en"
@@ -328,6 +355,19 @@ export function AdminTrafficBoard({
       tone: "success" as const,
     },
     {
+      label: t.adminTrafficBoardPage.totalTrafficCost,
+      value: resolvedCount > 0 ? formatUsdValue(totalTrafficCostUsd, locale) : "--",
+      delta:
+        requestableCount > 0
+          ? locale === "en"
+            ? `Loaded ${resolvedCount}/${requestableCount} customers`
+            : `已完成 ${resolvedCount}/${requestableCount} 个客户查询`
+          : locale === "en"
+            ? "No active traffic queries"
+            : "当前没有可查询的流量费用",
+      tone: "warning" as const,
+    },
+    {
       label: locale === "en" ? "Customers With Data" : "有数据客户",
       value: resolvedCount > 0 ? String(liveCustomerCount) : "--",
       delta:
@@ -350,7 +390,7 @@ export function AdminTrafficBoard({
 
   return (
     <div className="space-y-3">
-      <section className="grid gap-2.5 md:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-2.5 md:grid-cols-2 xl:grid-cols-5">
         {metrics.map((metric) => (
           <MetricCard key={metric.label} compact {...metric} />
         ))}
@@ -408,13 +448,8 @@ export function AdminTrafficBoard({
                 <span>{view.trafficLabel}</span>
                 <span className="text-slate-400">{trafficSortDirection === "desc" ? "↓" : "↑"}</span>
               </button>,
-              ...(hasGiftTrafficCustomers
-                ? [
-                    t.trafficBoard.monthlyGiftTrafficGb,
-                    t.trafficBoard.giftUsageRate,
-                    ...(showGiftTrafficProjection ? [projectedTrafficLabel] : []),
-                  ]
-                : []),
+              view.trafficCostLabel,
+              ...(showGiftTrafficProjection ? [projectedTrafficLabel] : []),
               t.trafficBoard.action,
             ]}
             rows={sortedRows.map((row) => {
@@ -457,7 +492,7 @@ export function AdminTrafficBoard({
                   {row.canRetry && !row.loading ? (
                     <button
                       type="button"
-                      onClick={() => void requestRowTraffic(row)}
+                      onClick={() => void enqueueRowTraffic(row)}
                       className="mt-1 inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium leading-none text-slate-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-slate-950"
                     >
                       <span aria-hidden="true">↻</span>
@@ -472,23 +507,31 @@ export function AdminTrafficBoard({
                 </div>,
               ];
 
-              if (hasGiftTrafficCustomers) {
+              cells.push(
+                <div key={`${row.customerId}-traffic-cost`} className="min-w-[120px]">
+                  {row.trafficCost ? (
+                    <span className="whitespace-nowrap text-slate-600">{row.trafficCost}</span>
+                  ) : row.trafficCostCanRetry && !row.loading ? (
+                    <button
+                      type="button"
+                      onClick={() => void enqueueRowTraffic(row)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium leading-none text-slate-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-slate-950"
+                    >
+                      <span aria-hidden="true">↻</span>
+                      <span>{getRetryTrafficLabel(locale)}</span>
+                    </button>
+                  ) : (
+                    <span className="whitespace-nowrap text-slate-600">--</span>
+                  )}
+                </div>,
+              );
+
+              if (showGiftTrafficProjection) {
                 cells.push(
-                  <span key={`${row.customerId}-gift-traffic`} className="whitespace-nowrap text-slate-600">
-                    {row.monthlyGiftTrafficGb ? formatTrafficAllowanceFromGb(row.monthlyGiftTrafficGb, locale) : "--"}
-                  </span>,
-                  <span key={`${row.customerId}-gift-usage`} className="whitespace-nowrap text-slate-600">
-                    {row.giftUsageRate ?? "--"}
+                  <span key={`${row.customerId}-projected`} className="whitespace-nowrap text-slate-600">
+                    {row.projectedMonthTraffic ?? "--"}
                   </span>,
                 );
-
-                if (showGiftTrafficProjection) {
-                  cells.push(
-                    <span key={`${row.customerId}-projected`} className="whitespace-nowrap text-slate-600">
-                      {row.projectedMonthTraffic ?? "--"}
-                    </span>,
-                  );
-                }
               }
 
               cells.push(

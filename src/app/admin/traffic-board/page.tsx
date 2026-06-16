@@ -1,6 +1,7 @@
 import { AdminTrafficBoard } from "@/components/admin-traffic-board";
 import { DashboardShell } from "@/components/dashboard-ui";
 import { requireAdminSession } from "@/lib/admin-auth";
+import { buildAdminNav } from "@/lib/admin-nav";
 import { getTranslations } from "@/lib/i18n";
 import { getCurrentLocale } from "@/lib/locale";
 import { getTrafficBoardShellView, type TrafficBoardPeriod } from "@/lib/mock-backend";
@@ -18,22 +19,6 @@ function parseTrafficBoardPeriod(value: string | string[] | undefined): TrafficB
     : "cycle";
 }
 
-function buildAdminTrafficBoardNav(
-  locale: Awaited<ReturnType<typeof getCurrentLocale>>,
-  isSuperAdmin: boolean,
-) {
-  const t = getTranslations(locale);
-  return [
-    { label: t.adminTrafficBoardPage.nav.trafficBoard, href: "/admin/traffic-board", active: true },
-    { label: t.adminTrafficBoardPage.nav.reports, href: "/admin/reports" },
-    { label: t.adminTrafficBoardPage.nav.customers, href: "/admin/customers" },
-    { label: t.adminTrafficBoardPage.nav.announcements, href: "/admin/announcements" },
-    ...(isSuperAdmin
-      ? [{ label: t.adminTrafficBoardPage.nav.accounts, href: "/admin/accounts" }]
-      : []),
-  ];
-}
-
 export default async function AdminTrafficBoardPage({
   searchParams,
 }: {
@@ -45,7 +30,7 @@ export default async function AdminTrafficBoardPage({
   const t = getTranslations(locale);
   const period = parseTrafficBoardPeriod(params.period);
   const view = await getTrafficBoardShellView(locale, adminSession, period);
-  const nav = buildAdminTrafficBoardNav(locale, adminSession.role === "super_admin");
+  const nav = buildAdminNav(locale, adminSession, "trafficBoard");
 
   return (
     <DashboardShell

@@ -17,7 +17,8 @@ type FormState = {
   status: "正常" | "待审查" | "停用";
   accountManagerEmail: string;
   renewalDay: string;
-  monthlyGiftTrafficGb: string;
+  monthlyGiftCreditUsd: string;
+  cumulativeGiftCreditUsd: string;
   trafficMarkupPercent: string;
   notes: string;
 };
@@ -30,7 +31,8 @@ function buildForm(customer: ManagedCustomerRecord): FormState {
     status: customer.status,
     accountManagerEmail: customer.accountManagerEmail ?? "",
     renewalDay: customer.renewalDay ? String(customer.renewalDay) : "",
-    monthlyGiftTrafficGb: customer.monthlyGiftTrafficGb ? String(Number((customer.monthlyGiftTrafficGb / 1024).toFixed(2))) : "",
+    monthlyGiftCreditUsd: customer.monthlyGiftCreditUsd ? String(customer.monthlyGiftCreditUsd) : "",
+    cumulativeGiftCreditUsd: customer.cumulativeGiftCreditUsd ? String(customer.cumulativeGiftCreditUsd) : "",
     trafficMarkupPercent: customer.trafficMarkupPercent ? String(customer.trafficMarkupPercent) : "",
     notes: customer.notes,
   };
@@ -65,14 +67,14 @@ function parseRenewalDay(value: string) {
   return Number.isInteger(parsed) ? parsed : null;
 }
 
-function parseMonthlyGiftTrafficGb(value: string) {
+function parseGiftCreditUsd(value: string) {
   const normalized = value.trim();
   if (!normalized) {
     return null;
   }
 
   const parsed = Number(normalized);
-  return Number.isFinite(parsed) && parsed > 0 ? Number((parsed * 1024).toFixed(2)) : null;
+  return Number.isFinite(parsed) && parsed > 0 ? Number(parsed.toFixed(2)) : null;
 }
 
 function parseTrafficMarkupPercent(value: string) {
@@ -221,7 +223,8 @@ export function AdminCustomerManager({
           ...payload,
           domains: parseDomains(payload.domainsText),
           renewalDay: parseRenewalDay(payload.renewalDay),
-          monthlyGiftTrafficGb: parseMonthlyGiftTrafficGb(payload.monthlyGiftTrafficGb),
+          monthlyGiftCreditUsd: parseGiftCreditUsd(payload.monthlyGiftCreditUsd),
+          cumulativeGiftCreditUsd: parseGiftCreditUsd(payload.cumulativeGiftCreditUsd),
           ...(isSuperAdmin
             ? {
                 trafficMarkupPercent: parseTrafficMarkupPercent(payload.trafficMarkupPercent),
@@ -256,7 +259,8 @@ export function AdminCustomerManager({
       status: nextStatus,
       accountManagerEmail: customer.accountManagerEmail ?? "",
       renewalDay: customer.renewalDay ? String(customer.renewalDay) : "",
-      monthlyGiftTrafficGb: customer.monthlyGiftTrafficGb ? String(Number((customer.monthlyGiftTrafficGb / 1024).toFixed(2))) : "",
+      monthlyGiftCreditUsd: customer.monthlyGiftCreditUsd ? String(customer.monthlyGiftCreditUsd) : "",
+      cumulativeGiftCreditUsd: customer.cumulativeGiftCreditUsd ? String(customer.cumulativeGiftCreditUsd) : "",
       trafficMarkupPercent: customer.trafficMarkupPercent ? String(customer.trafficMarkupPercent) : "",
       notes: customer.notes,
     });
@@ -361,11 +365,19 @@ export function AdminCustomerManager({
                     </span>
                   </div>
                   <div>
-                    {t.customerManager.labels.monthlyGiftTrafficGb}:{" "}
+                    {t.customerManager.labels.monthlyGiftCreditUsd}:{" "}
                     <span className="text-slate-950">
-                      {customer.monthlyGiftTrafficGb
-                        ? `${Number((customer.monthlyGiftTrafficGb / 1024).toFixed(2))} TB`
-                        : t.customerManager.noMonthlyGiftTraffic}
+                      {customer.monthlyGiftCreditUsd
+                        ? `${customer.monthlyGiftCreditUsd.toFixed(2)} USD`
+                        : t.customerManager.noGiftCredit}
+                    </span>
+                  </div>
+                  <div>
+                    {t.customerManager.labels.cumulativeGiftCreditUsd}:{" "}
+                    <span className="text-slate-950">
+                      {customer.cumulativeGiftCreditUsd
+                        ? `${customer.cumulativeGiftCreditUsd.toFixed(2)} USD`
+                        : t.customerManager.noGiftCredit}
                     </span>
                   </div>
                   {isSuperAdmin ? (
@@ -515,9 +527,19 @@ export function AdminCustomerManager({
                 min={0}
                 step="0.01"
                 inputMode="decimal"
-                value={form.monthlyGiftTrafficGb}
-                onChange={(event) => updateField("monthlyGiftTrafficGb", event.target.value)}
-                placeholder={t.customerManager.placeholders.monthlyGiftTrafficGb}
+                value={form.monthlyGiftCreditUsd}
+                onChange={(event) => updateField("monthlyGiftCreditUsd", event.target.value)}
+                placeholder={t.customerManager.placeholders.monthlyGiftCreditUsd}
+                className={inputClassName()}
+              />
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                inputMode="decimal"
+                value={form.cumulativeGiftCreditUsd}
+                onChange={(event) => updateField("cumulativeGiftCreditUsd", event.target.value)}
+                placeholder={t.customerManager.placeholders.cumulativeGiftCreditUsd}
                 className={inputClassName()}
               />
               {isSuperAdmin ? (

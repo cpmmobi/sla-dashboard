@@ -12,7 +12,8 @@ type FormState = {
   status: "正常" | "待审查";
   accountManagerEmail: string;
   renewalDay: string;
-  monthlyGiftTrafficGb: string;
+  monthlyGiftCreditUsd: string;
+  cumulativeGiftCreditUsd: string;
   trafficMarkupPercent: string;
   notes: string;
 };
@@ -25,7 +26,8 @@ function buildInitialState(currentAdmin: AdminSession): FormState {
     status: "正常",
     accountManagerEmail: currentAdmin.role === "account_manager" ? currentAdmin.username : "",
     renewalDay: "",
-    monthlyGiftTrafficGb: "",
+    monthlyGiftCreditUsd: "",
+    cumulativeGiftCreditUsd: "",
     trafficMarkupPercent: "",
     notes: "",
   };
@@ -41,14 +43,14 @@ function parseRenewalDay(value: string) {
   return Number.isInteger(parsed) ? parsed : null;
 }
 
-function parseMonthlyGiftTrafficGb(value: string) {
+function parseGiftCreditUsd(value: string) {
   const normalized = value.trim();
   if (!normalized) {
     return null;
   }
 
   const parsed = Number(normalized);
-  return Number.isFinite(parsed) && parsed > 0 ? Number((parsed * 1024).toFixed(2)) : null;
+  return Number.isFinite(parsed) && parsed > 0 ? Number(parsed.toFixed(2)) : null;
 }
 
 function parseTrafficMarkupPercent(value: string) {
@@ -110,7 +112,8 @@ export function AdminCustomerForm({
           ...form,
           domains: parseDomains(form.domainsText),
           renewalDay: parseRenewalDay(form.renewalDay),
-          monthlyGiftTrafficGb: parseMonthlyGiftTrafficGb(form.monthlyGiftTrafficGb),
+          monthlyGiftCreditUsd: parseGiftCreditUsd(form.monthlyGiftCreditUsd),
+          cumulativeGiftCreditUsd: parseGiftCreditUsd(form.cumulativeGiftCreditUsd),
           ...(isAccountManager
             ? {}
             : {
@@ -201,15 +204,27 @@ export function AdminCustomerForm({
             className={inputClassName()}
           />
         </Field>
-        <Field label={t.customerForm.labels.monthlyGiftTrafficGb}>
+        <Field label={t.customerForm.labels.monthlyGiftCreditUsd}>
           <input
             type="number"
             min={0}
             step="0.01"
             inputMode="decimal"
-            value={form.monthlyGiftTrafficGb}
-            onChange={(event) => updateField("monthlyGiftTrafficGb", event.target.value)}
-            placeholder={t.customerForm.placeholders.monthlyGiftTrafficGb}
+            value={form.monthlyGiftCreditUsd}
+            onChange={(event) => updateField("monthlyGiftCreditUsd", event.target.value)}
+            placeholder={t.customerForm.placeholders.monthlyGiftCreditUsd}
+            className={inputClassName()}
+          />
+        </Field>
+        <Field label={t.customerForm.labels.cumulativeGiftCreditUsd}>
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            inputMode="decimal"
+            value={form.cumulativeGiftCreditUsd}
+            onChange={(event) => updateField("cumulativeGiftCreditUsd", event.target.value)}
+            placeholder={t.customerForm.placeholders.cumulativeGiftCreditUsd}
             className={inputClassName()}
           />
         </Field>

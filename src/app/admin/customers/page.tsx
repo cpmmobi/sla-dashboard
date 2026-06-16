@@ -1,5 +1,6 @@
 import { AdminCustomersContent } from "@/components/admin-customers-content";
 import { DashboardShell } from "@/components/dashboard-ui";
+import { buildAdminNav } from "@/lib/admin-nav";
 import { getTranslations } from "@/lib/i18n";
 import { getCurrentLocale } from "@/lib/locale";
 import { requireAdminSession } from "@/lib/admin-auth";
@@ -10,15 +11,7 @@ export default async function AdminCustomersPage() {
   const locale = await getCurrentLocale();
   const t = getTranslations(locale);
   const adminView = await getAdminView(locale, adminSession);
-  const nav = [
-    { label: t.adminCustomersPage.nav.trafficBoard, href: "/admin/traffic-board" },
-    { label: t.adminCustomersPage.nav.reports, href: "/admin/reports" },
-    { label: t.adminCustomersPage.nav.customers, href: "/admin/customers", active: true },
-    { label: t.adminCustomersPage.nav.announcements, href: "/admin/announcements" },
-    ...(adminSession.role === "super_admin"
-      ? [{ label: t.adminCustomersPage.nav.accounts, href: "/admin/accounts" }]
-      : []),
-  ];
+  const nav = buildAdminNav(locale, adminSession, "customers");
 
   return (
     <DashboardShell
