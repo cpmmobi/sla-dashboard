@@ -391,6 +391,22 @@ function toCustomerRecord(customer: {
   };
 }
 
+const customerCoreSelect = {
+  id: true,
+  name: true,
+  authCode: true,
+  domain: true,
+  domainsJson: true,
+  status: true,
+  timezone: true,
+  contact: true,
+  notes: true,
+  accountManagerEmail: true,
+  renewalDay: true,
+  monthlyGiftTrafficGb: true,
+  trafficMarkupPercent: true,
+} as const;
+
 function buildUnavailableMetrics(locale: Locale): Metric[] {
   if (locale === "en") {
     return [
@@ -1795,12 +1811,14 @@ export async function getTrafficBoardView(
 
 export function getCustomers() {
   return prisma.customer.findMany({
+    select: customerCoreSelect,
     orderBy: { updatedAt: "desc" },
   });
 }
 
 export function getCustomersForAdmin(adminSession: AdminSession) {
   return prisma.customer.findMany({
+    select: customerCoreSelect,
     where: isSuperAdmin(adminSession)
       ? undefined
       : {
@@ -1824,6 +1842,7 @@ function formatAdminAccessLogDate(date: Date, locale: Locale) {
 
 async function getCustomerForAdmin(id: string, adminSession: AdminSession) {
   return prisma.customer.findFirst({
+    select: customerCoreSelect,
     where: isSuperAdmin(adminSession)
       ? { id }
       : {
@@ -1836,6 +1855,7 @@ async function getCustomerForAdmin(id: string, adminSession: AdminSession) {
 export async function getCustomerByAuth(authCode?: string | null) {
   if (!authCode) {
     const firstCustomer = await prisma.customer.findFirst({
+      select: customerCoreSelect,
       orderBy: { createdAt: "asc" },
     });
 
@@ -1843,6 +1863,7 @@ export async function getCustomerByAuth(authCode?: string | null) {
   }
 
   const customer = await prisma.customer.findUnique({
+    select: customerCoreSelect,
     where: { authCode },
   });
 
@@ -2507,18 +2528,30 @@ export async function getAdminReportRecordsWithFilters(
     ? ALL_CLIENT_DOMAINS
     : selectedCustomer?.domains.find((domain) => domain === filters.domain) ??
       selectedCustomer?.domains[0];
-  const allDomainsReportResult =
-    selectedCustomer && selectedDomain
-      ? selectedDomain === ALL_CLIENT_DOMAINS
-        ? await buildAllDomainsTrafficReport(selectedCustomer.domains, effectiveFilters, locale)
-        : null
-      : null;
-  const liveReportResult =
-    selectedCustomer && selectedDomain
-      ? selectedDomain === ALL_CLIENT_DOMAINS
-        ? allDomainsReportResult?.report ?? null
-        : await fetchLiveDomainReport(selectedDomain, effectiveFilters, locale)
-      : null;
+  let allDomainsReportResult: Awaited<ReturnType<typeof buildAllDomainsTrafficReport>> | null = null;
+  let liveReportResult: Awaited<ReturnType<typeof fetchLiveDomainReport>> | null = null;
+
+  if (selectedCustomer && selectedDomain) {
+    try {
+      allDomainsReportResult =
+        selectedDomain === ALL_CLIENT_DOMAINS
+          ? await buildAllDomainsTrafficReport(selectedCustomer.domains, effectiveFilters, locale)
+          : null;
+      liveReportResult =
+        selectedDomain === ALL_CLIENT_DOMAINS
+          ? allDomainsReportResult?.report ?? null
+          : await fetchLiveDomainReport(selectedDomain, effectiveFilters, locale);
+    } catch (error) {
+      console.error("Failed to load live admin report", {
+        customerId: selectedCustomer.id,
+        domain: selectedDomain,
+        filters: effectiveFilters,
+        error,
+      });
+      allDomainsReportResult = null;
+      liveReportResult = null;
+    }
+  }
   const reportNotice =
     selectedDomain === ALL_CLIENT_DOMAINS &&
     selectedCustomer &&
