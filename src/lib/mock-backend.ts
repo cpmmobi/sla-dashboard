@@ -2509,119 +2509,132 @@ export async function getAdminReportRecordsWithFilters(
   adminSession: AdminSession,
   filters: ReportFilters = defaultReportFilters,
 ): Promise<AdminReportRecord[]> {
-  const customers: CustomerRecord[] = (await getCustomersForAdmin(adminSession)).map(toCustomerRecord);
-  if (customers.length === 0) {
+  try {
+    const customers: CustomerRecord[] = (await getCustomersForAdmin(adminSession)).map(toCustomerRecord);
+    if (customers.length === 0) {
+      return [];
+    }
+    const queryType = filters.queryType ?? "traffic";
+    const selectedCustomer =
+      customers.find((customer) => customer.id === filters.customerId) ?? customers[0];
+    const shouldDefaultToAllDomains =
+      queryType === "traffic" && !filters.domain && (selectedCustomer?.domains.length ?? 0) > 1;
+    const shouldAggregateAllDomains =
+      queryType === "traffic" &&
+      (filters.domain === ALL_CLIENT_DOMAINS || shouldDefaultToAllDomains);
+    const effectiveFilters = selectedCustomer
+      ? normalizeBillingCycleReportFilters(filters, selectedCustomer.renewalDay)
+      : filters;
+    const selectedDomain = shouldAggregateAllDomains
+      ? ALL_CLIENT_DOMAINS
+      : selectedCustomer?.domains.find((domain) => domain === filters.domain) ??
+        selectedCustomer?.domains[0];
+    let allDomainsReportResult: Awaited<ReturnType<typeof buildAllDomainsTrafficReport>> | null = null;
+    let liveReportResult: Awaited<ReturnType<typeof fetchLiveDomainReport>> | null = null;
+
+    if (selectedCustomer && selectedDomain) {
+      try {
+        allDomainsReportResult =
+          selectedDomain === ALL_CLIENT_DOMAINS
+            ? await buildAllDomainsTrafficReport(selectedCustomer.domains, effectiveFilters, locale)
+            : null;
+        liveReportResult =
+          selectedDomain === ALL_CLIENT_DOMAINS
+            ? allDomainsReportResult?.report ?? null
+            : await fetchLiveDomainReport(selectedDomain, effectiveFilters, locale);
+      } catch (error) {
+        console.error("Failed to load live admin report", {
+          customerId: selectedCustomer.id,
+          domain: selectedDomain,
+          filters: effectiveFilters,
+          error,
+        });
+        allDomainsReportResult = null;
+        liveReportResult = null;
+      }
+    }
+    const reportNotice =
+      selectedDomain === ALL_CLIENT_DOMAINS &&
+      selectedCustomer &&
+      allDomainsReportResult &&
+      allDomainsReportResult.failureReason &&
+      allDomainsReportResult.failureReason !== "empty"
+        ? getAllDomainsIncompleteNotice(
+            locale,
+            allDomainsReportResult.matchedDomainCount,
+            selectedCustomer.domains.length,
+          )
+        : null;
+    const liveReport =
+      selectedCustomer && liveReportResult
+        ? applyTrafficMarkupToLiveReportData(
+            liveReportResult,
+            selectedCustomer.trafficMarkupPercent,
+            locale,
+          )
+        : liveReportResult;
+    const unavailableReport = buildUnavailableReport(locale);
+
+    return customers.flatMap((customer) =>
+      [
+        ...(queryType === "traffic" && customer.domains.length > 1 ? [ALL_CLIENT_DOMAINS] : []),
+        ...customer.domains,
+      ].map((domain) => {
+        const domainLabel =
+          domain === ALL_CLIENT_DOMAINS
+            ? locale === "en"
+              ? "All Domains"
+              : "全域名"
+            : domain;
+        const baseRecord = {
+          customerId: customer.id,
+          customerName: customer.name,
+          domain,
+          status: customer.status,
+          customer,
+          reportNotice: null,
+          metrics: unavailableReport.metrics,
+          pvUvTrend: unavailableReport.pvUvTrend,
+          trafficTrend: unavailableReport.trafficTrend,
+          peakBandwidth: unavailableReport.peakBandwidth,
+          highlights: buildHighlights(customer, locale, domainLabel),
+          trafficUsageTable: unavailableReport.trafficUsageTable,
+          audienceUsageTable: unavailableReport.audienceUsageTable,
+          regionalTrafficTable: unavailableReport.regionalTrafficTable,
+          regionalTrafficTotalCost: unavailableReport.regionalTrafficTotalCost,
+        };
+
+        if (
+          liveReport &&
+          selectedCustomer &&
+          customer.id === selectedCustomer.id &&
+          domain === selectedDomain
+        ) {
+          return {
+            ...baseRecord,
+            reportNotice,
+            metrics: liveReport.metrics,
+            pvUvTrend: liveReport.pvUvTrend,
+            trafficTrend: liveReport.trafficTrend,
+            peakBandwidth: liveReport.peakBandwidth,
+            trafficUsageTable: liveReport.trafficUsageTable,
+            audienceUsageTable: liveReport.audienceUsageTable,
+            regionalTrafficTable: liveReport.regionalTrafficTable,
+            regionalTrafficTotalCost: liveReport.regionalTrafficTotalCost,
+          };
+        }
+
+        return baseRecord;
+      }),
+    );
+  } catch (error) {
+    console.error("Failed to load admin report records", {
+      admin: adminSession.username,
+      filters,
+      error,
+    });
     return [];
   }
-  const queryType = filters.queryType ?? "traffic";
-  const selectedCustomer =
-    customers.find((customer) => customer.id === filters.customerId) ?? customers[0];
-  const shouldDefaultToAllDomains =
-    queryType === "traffic" && !filters.domain && (selectedCustomer?.domains.length ?? 0) > 1;
-  const shouldAggregateAllDomains =
-    queryType === "traffic" &&
-    (filters.domain === ALL_CLIENT_DOMAINS || shouldDefaultToAllDomains);
-  const effectiveFilters = selectedCustomer
-    ? normalizeBillingCycleReportFilters(filters, selectedCustomer.renewalDay)
-    : filters;
-  const selectedDomain = shouldAggregateAllDomains
-    ? ALL_CLIENT_DOMAINS
-    : selectedCustomer?.domains.find((domain) => domain === filters.domain) ??
-      selectedCustomer?.domains[0];
-  let allDomainsReportResult: Awaited<ReturnType<typeof buildAllDomainsTrafficReport>> | null = null;
-  let liveReportResult: Awaited<ReturnType<typeof fetchLiveDomainReport>> | null = null;
-
-  if (selectedCustomer && selectedDomain) {
-    try {
-      allDomainsReportResult =
-        selectedDomain === ALL_CLIENT_DOMAINS
-          ? await buildAllDomainsTrafficReport(selectedCustomer.domains, effectiveFilters, locale)
-          : null;
-      liveReportResult =
-        selectedDomain === ALL_CLIENT_DOMAINS
-          ? allDomainsReportResult?.report ?? null
-          : await fetchLiveDomainReport(selectedDomain, effectiveFilters, locale);
-    } catch (error) {
-      console.error("Failed to load live admin report", {
-        customerId: selectedCustomer.id,
-        domain: selectedDomain,
-        filters: effectiveFilters,
-        error,
-      });
-      allDomainsReportResult = null;
-      liveReportResult = null;
-    }
-  }
-  const reportNotice =
-    selectedDomain === ALL_CLIENT_DOMAINS &&
-    selectedCustomer &&
-    allDomainsReportResult &&
-    allDomainsReportResult.failureReason &&
-    allDomainsReportResult.failureReason !== "empty"
-      ? getAllDomainsIncompleteNotice(
-          locale,
-          allDomainsReportResult.matchedDomainCount,
-          selectedCustomer.domains.length,
-        )
-      : null;
-  const liveReport =
-    selectedCustomer && liveReportResult
-      ? applyTrafficMarkupToLiveReportData(liveReportResult, selectedCustomer.trafficMarkupPercent, locale)
-      : liveReportResult;
-  const unavailableReport = buildUnavailableReport(locale);
-
-  return customers.flatMap((customer) =>
-    [
-      ...(queryType === "traffic" && customer.domains.length > 1 ? [ALL_CLIENT_DOMAINS] : []),
-      ...customer.domains,
-    ].map((domain) => {
-      const domainLabel =
-        domain === ALL_CLIENT_DOMAINS
-          ? locale === "en"
-            ? "All Domains"
-            : "全域名"
-          : domain;
-      const baseRecord = {
-        customerId: customer.id,
-        customerName: customer.name,
-        domain,
-        status: customer.status,
-        customer,
-        reportNotice: null,
-        metrics: unavailableReport.metrics,
-        pvUvTrend: unavailableReport.pvUvTrend,
-        trafficTrend: unavailableReport.trafficTrend,
-        peakBandwidth: unavailableReport.peakBandwidth,
-        highlights: buildHighlights(customer, locale, domainLabel),
-        trafficUsageTable: unavailableReport.trafficUsageTable,
-        audienceUsageTable: unavailableReport.audienceUsageTable,
-        regionalTrafficTable: unavailableReport.regionalTrafficTable,
-        regionalTrafficTotalCost: unavailableReport.regionalTrafficTotalCost,
-      };
-
-      if (
-        liveReport &&
-        selectedCustomer &&
-        customer.id === selectedCustomer.id &&
-        domain === selectedDomain
-      ) {
-        return {
-          ...baseRecord,
-          reportNotice,
-          metrics: liveReport.metrics,
-          pvUvTrend: liveReport.pvUvTrend,
-          trafficTrend: liveReport.trafficTrend,
-          peakBandwidth: liveReport.peakBandwidth,
-          trafficUsageTable: liveReport.trafficUsageTable,
-          audienceUsageTable: liveReport.audienceUsageTable,
-          regionalTrafficTable: liveReport.regionalTrafficTable,
-          regionalTrafficTotalCost: liveReport.regionalTrafficTotalCost,
-        };
-      }
-
-      return baseRecord;
-    }),
-  );
 }
 
 export async function getClientDashboard(
