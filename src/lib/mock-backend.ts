@@ -207,10 +207,14 @@ export type TrafficBoardRow = {
   trafficCost: string | null;
   trafficCostUsd: number;
   trafficCostCanRetry: boolean;
+  cycleWaiverTrafficFee: string | null;
+  cycleOverspend: string | null;
+  cycleOverspendUsd: number;
   trafficHint: string | null;
   canRetry: boolean;
   trafficMarkupPercent: number | null;
   projectedMonthTraffic: string | null;
+  projectedTrafficCost: string | null;
 };
 
 export type TrafficBoardSummary = {
@@ -488,6 +492,8 @@ const customerCoreSelect = {
   notes: true,
   accountManagerEmail: true,
   renewalDay: true,
+  monthlyGiftCreditUsd: true,
+  cumulativeGiftCreditUsd: true,
   trafficMarkupPercent: true,
 } as const;
 
@@ -658,6 +664,10 @@ function getPreviousYearMonth(year: number, month: number) {
   return month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 };
 }
 
+function getNextYearMonth(year: number, month: number) {
+  return month === 12 ? { year: year + 1, month: 1 } : { year, month: month + 1 };
+}
+
 function formatRenewalDayDisplay(renewalDay: number | null, locale: Locale) {
   const normalizedRenewalDay = renewalDay ?? 1;
 
@@ -670,46 +680,84 @@ function formatRenewalDayDisplay(renewalDay: number | null, locale: Locale) {
   return locale === "en" ? `Day ${normalizedRenewalDay}` : `每月 ${normalizedRenewalDay} 号`;
 }
 
+function resolveShiftedBillingCycleBoundary(
+  renewalDay: number | null,
+  referenceYear: number,
+  referenceMonth: number,
+  offsetMinutes: number,
+) {
+  const normalizedRenewalDay = renewalDay ?? 1;
+  const renewalDayInMonth = Math.min(normalizedRenewalDay, getDaysInMonth(referenceYear, referenceMonth));
+  const renewalUtc =
+    Date.UTC(referenceYear, referenceMonth - 1, renewalDayInMonth, 0, 0, 0, 0) - offsetMinutes * 60 * 1000;
+  const boundaryUtc = renewalUtc - 24 * 60 * 60 * 1000;
+  const boundaryLocal = getDatePartsAtOffset(new Date(boundaryUtc), offsetMinutes);
+
+  return {
+    referenceYear,
+    referenceMonth,
+    normalizedRenewalDay,
+    boundaryUtc,
+    boundaryYear: boundaryLocal.year,
+    boundaryMonth: boundaryLocal.month,
+    boundaryDay: boundaryLocal.day,
+  };
+}
+
 function getCurrentBillingCycleMeta(
   renewalDay: number | null,
   locale: Locale,
   now: Date,
   offsetMinutes = 8 * 60,
 ) {
-  const normalizedRenewalDay = renewalDay ?? 1;
   const current = getDatePartsAtOffset(now, offsetMinutes);
-  const currentMonthRenewalDay = Math.min(normalizedRenewalDay, getDaysInMonth(current.year, current.month));
-
-  let cycleYear = current.year;
-  let cycleMonth = current.month;
-
-  if (current.day < currentMonthRenewalDay) {
-    if (cycleMonth === 1) {
-      cycleYear -= 1;
-      cycleMonth = 12;
-    } else {
-      cycleMonth -= 1;
-    }
-  }
-
-  const cycleStartDay = Math.min(normalizedRenewalDay, getDaysInMonth(cycleYear, cycleMonth));
-  const nextMonthYear = cycleMonth === 12 ? cycleYear + 1 : cycleYear;
-  const nextMonth = cycleMonth === 12 ? 1 : cycleMonth + 1;
-  const nextRenewalDay = Math.min(normalizedRenewalDay, getDaysInMonth(nextMonthYear, nextMonth));
+  const currentMonthBoundary = resolveShiftedBillingCycleBoundary(
+    renewalDay,
+    current.year,
+    current.month,
+    offsetMinutes,
+  );
+  const cycleBoundary =
+    now.getTime() >= currentMonthBoundary.boundaryUtc
+      ? currentMonthBoundary
+      : (() => {
+          const previousMonth = getPreviousYearMonth(current.year, current.month);
+          return resolveShiftedBillingCycleBoundary(
+            renewalDay,
+            previousMonth.year,
+            previousMonth.month,
+            offsetMinutes,
+          );
+        })();
+  const nextCycleReference = getNextYearMonth(cycleBoundary.referenceYear, cycleBoundary.referenceMonth);
+  const nextCycleBoundary = resolveShiftedBillingCycleBoundary(
+    renewalDay,
+    nextCycleReference.year,
+    nextCycleReference.month,
+    offsetMinutes,
+  );
+  const currentMonthRenewalDay = Math.min(renewalDay ?? 1, getDaysInMonth(current.year, current.month));
+  const currentMonthRenewalUtc =
+    Date.UTC(current.year, current.month - 1, currentMonthRenewalDay, 0, 0, 0, 0) - offsetMinutes * 60 * 1000;
+  const nextRenewalReference =
+    now.getTime() < currentMonthRenewalUtc
+      ? { year: current.year, month: current.month }
+      : getNextYearMonth(current.year, current.month);
+  const nextRenewalDay = Math.min(renewalDay ?? 1, getDaysInMonth(nextRenewalReference.year, nextRenewalReference.month));
   const nextRenewalUtc =
-    Date.UTC(nextMonthYear, nextMonth - 1, nextRenewalDay, 0, 0, 0, 0) - offsetMinutes * 60 * 1000;
-  const cycleStartUtc = Date.UTC(cycleYear, cycleMonth - 1, cycleStartDay, 0, 0, 0, 0) - offsetMinutes * 60 * 1000;
+    Date.UTC(nextRenewalReference.year, nextRenewalReference.month - 1, nextRenewalDay, 0, 0, 0, 0) -
+    offsetMinutes * 60 * 1000;
   const daysUntilRenewal = Math.max(
     0,
     Math.ceil((nextRenewalUtc - now.getTime()) / (24 * 60 * 60 * 1000)),
   );
   const cycleElapsedDays = Math.max(
     1 / (24 * 60),
-    (now.getTime() - cycleStartUtc) / (24 * 60 * 60 * 1000),
+    (now.getTime() - cycleBoundary.boundaryUtc) / (24 * 60 * 60 * 1000),
   );
   const cycleTotalDays = Math.max(
     cycleElapsedDays,
-    (nextRenewalUtc - cycleStartUtc) / (24 * 60 * 60 * 1000),
+    (nextCycleBoundary.boundaryUtc - cycleBoundary.boundaryUtc) / (24 * 60 * 60 * 1000),
   );
 
   return {
@@ -717,13 +765,19 @@ function getCurrentBillingCycleMeta(
       queryType: "traffic" as const,
       timeRange: "custom" as const,
       area: "all" as const,
-      from: formatLocalDateTime(cycleYear, cycleMonth, cycleStartDay, 0, 0),
+      from: formatLocalDateTime(
+        cycleBoundary.boundaryYear,
+        cycleBoundary.boundaryMonth,
+        cycleBoundary.boundaryDay,
+        0,
+        0,
+      ),
       to: formatLocalDateTime(current.year, current.month, current.day, current.hour, current.minute),
       timeZone: "Asia/Shanghai",
       timeZoneOffsetMinutes: offsetMinutes,
       locations: [],
     },
-    cycleRange: `${formatBillingRangeDate(cycleMonth, cycleStartDay, locale)} - ${formatBillingRangeDate(
+    cycleRange: `${formatBillingRangeDate(cycleBoundary.boundaryMonth, cycleBoundary.boundaryDay, locale)} - ${formatBillingRangeDate(
       current.month,
       current.day,
       locale,
@@ -732,10 +786,14 @@ function getCurrentBillingCycleMeta(
     daysUntilRenewal,
     windowElapsedDays: cycleElapsedDays,
     windowTotalDays: cycleTotalDays,
-    cycleStartYear: cycleYear,
-    cycleStartMonth: cycleMonth,
-    cycleStartDay,
-    normalizedRenewalDay,
+    cycleStartYear: cycleBoundary.boundaryYear,
+    cycleStartMonth: cycleBoundary.boundaryMonth,
+    cycleStartDay: cycleBoundary.boundaryDay,
+    cycleStartUtc: cycleBoundary.boundaryUtc,
+    cycleEndUtc: nextCycleBoundary.boundaryUtc,
+    cycleBoundaryReferenceYear: cycleBoundary.referenceYear,
+    cycleBoundaryReferenceMonth: cycleBoundary.referenceMonth,
+    normalizedRenewalDay: cycleBoundary.normalizedRenewalDay,
     offsetMinutes,
   };
 }
@@ -747,27 +805,23 @@ function getPreviousBillingCycleMeta(
   offsetMinutes = 8 * 60,
 ) {
   const currentCycle = getCurrentBillingCycleMeta(renewalDay, locale, now, offsetMinutes);
-  const { year: previousCycleYear, month: previousCycleMonth } = getPreviousYearMonth(
-    currentCycle.cycleStartYear,
-    currentCycle.cycleStartMonth,
+  const { year: previousCycleReferenceYear, month: previousCycleReferenceMonth } = getPreviousYearMonth(
+    currentCycle.cycleBoundaryReferenceYear,
+    currentCycle.cycleBoundaryReferenceMonth,
   );
-  const previousCycleStartDay = Math.min(
-    currentCycle.normalizedRenewalDay,
-    getDaysInMonth(previousCycleYear, previousCycleMonth),
+  const previousCycleBoundary = resolveShiftedBillingCycleBoundary(
+    renewalDay,
+    previousCycleReferenceYear,
+    previousCycleReferenceMonth,
+    currentCycle.offsetMinutes,
   );
-  const previousCycleStartUtc =
-    Date.UTC(previousCycleYear, previousCycleMonth - 1, previousCycleStartDay, 0, 0, 0, 0) -
-    currentCycle.offsetMinutes * 60 * 1000;
-  const currentCycleStartUtc =
-    Date.UTC(currentCycle.cycleStartYear, currentCycle.cycleStartMonth - 1, currentCycle.cycleStartDay, 0, 0, 0, 0) -
-    currentCycle.offsetMinutes * 60 * 1000;
   const previousCycleEndParts = getDatePartsAtOffset(
-    new Date(currentCycleStartUtc - 60 * 1000),
+    new Date(currentCycle.cycleStartUtc - 60 * 1000),
     currentCycle.offsetMinutes,
   );
   const previousCycleTotalDays = Math.max(
     1,
-    Math.ceil((currentCycleStartUtc - previousCycleStartUtc) / (24 * 60 * 60 * 1000)),
+    Math.ceil((currentCycle.cycleStartUtc - previousCycleBoundary.boundaryUtc) / (24 * 60 * 60 * 1000)),
   );
 
   return {
@@ -775,7 +829,13 @@ function getPreviousBillingCycleMeta(
       queryType: "traffic" as const,
       timeRange: "custom" as const,
       area: "all" as const,
-      from: formatLocalDateTime(previousCycleYear, previousCycleMonth, previousCycleStartDay, 0, 0),
+      from: formatLocalDateTime(
+        previousCycleBoundary.boundaryYear,
+        previousCycleBoundary.boundaryMonth,
+        previousCycleBoundary.boundaryDay,
+        0,
+        0,
+      ),
       to: formatLocalDateTime(
         previousCycleEndParts.year,
         previousCycleEndParts.month,
@@ -787,15 +847,20 @@ function getPreviousBillingCycleMeta(
       timeZoneOffsetMinutes: currentCycle.offsetMinutes,
       locations: [],
     },
-    cycleRange: `${formatBillingRangeDate(previousCycleMonth, previousCycleStartDay, locale)} - ${formatBillingRangeDate(
-      previousCycleEndParts.month,
-      previousCycleEndParts.day,
-      locale,
-    )}`,
+    cycleRange: `${formatBillingRangeDate(previousCycleBoundary.boundaryMonth, previousCycleBoundary.boundaryDay, locale)} - ${formatBillingRangeDate(previousCycleEndParts.month, previousCycleEndParts.day, locale)}`,
     renewalDayDisplay: locale === "en" ? "Previous Billing Cycle" : "上一账期",
     daysUntilRenewal: 0,
     windowElapsedDays: previousCycleTotalDays,
     windowTotalDays: previousCycleTotalDays,
+    cycleStartYear: previousCycleBoundary.boundaryYear,
+    cycleStartMonth: previousCycleBoundary.boundaryMonth,
+    cycleStartDay: previousCycleBoundary.boundaryDay,
+    cycleStartUtc: previousCycleBoundary.boundaryUtc,
+    cycleEndUtc: currentCycle.cycleStartUtc,
+    cycleBoundaryReferenceYear: previousCycleBoundary.referenceYear,
+    cycleBoundaryReferenceMonth: previousCycleBoundary.referenceMonth,
+    normalizedRenewalDay: previousCycleBoundary.normalizedRenewalDay,
+    offsetMinutes: currentCycle.offsetMinutes,
   };
 }
 
@@ -1172,7 +1237,7 @@ function getTrafficBoardHint(
 function getTrafficBoardCycleHint(locale: Locale, period: TrafficBoardPeriod) {
   if (locale === "en") {
     if (period === "cycle") {
-      return "Billing-cycle traffic is accumulated from each customer's renewal day to now, using Asia/Shanghai.";
+      return "Billing-cycle traffic is accumulated from the day before each customer's renewal day to now, using Asia/Shanghai.";
     }
 
     if (period === "today") {
@@ -1203,7 +1268,7 @@ function getTrafficBoardCycleHint(locale: Locale, period: TrafficBoardPeriod) {
   }
 
   if (period === "cycle") {
-    return "账期累计流量会从每个客户的续费日起累计到当前，按北京时间统计。";
+    return "账期流量会从每个客户续费日前一天开始累计到当前，按北京时间统计。";
   }
 
   if (period === "today") {
@@ -1812,6 +1877,11 @@ function buildTrafficBoardBaseRow(
     trafficCost: null,
     trafficCostUsd: 0,
     trafficCostCanRetry: false,
+    cycleWaiverTrafficFee: customer.monthlyGiftCreditUsd
+      ? formatUsd(customer.monthlyGiftCreditUsd, locale)
+      : null,
+    cycleOverspend: formatUsd(0, locale),
+    cycleOverspendUsd: 0,
     trafficHint:
       customer.status !== "正常"
         ? getTrafficBoardHint(locale, "inactive")
@@ -1821,6 +1891,7 @@ function buildTrafficBoardBaseRow(
     canRetry: false,
     trafficMarkupPercent: customer.trafficMarkupPercent,
     projectedMonthTraffic: null,
+    projectedTrafficCost: null,
   };
 
   return {
@@ -1927,6 +1998,10 @@ async function buildTrafficBoardRow(
       : 0;
   let projectedPeriodTrafficGb: number | null = null;
   let projectedPeriodTrafficSource: "recent_72h" | "current_cycle_fallback" | "actual_only" | null = null;
+  let projectedTrafficCost: string | null = null;
+  const cycleWaiverTrafficFeeUsd = normalizeGiftCreditUsd(customer.monthlyGiftCreditUsd) ?? 0;
+  const cycleOverspendUsd = Math.max(trafficCostUsd - cycleWaiverTrafficFeeUsd, 0);
+  const cycleOverspend = formatUsd(cycleOverspendUsd, locale);
 
   if (shouldShowGiftTrafficProjection(period) && selectedTrafficAvailable && currentWindowHours) {
     if (remainingWindowHours <= 0) {
@@ -1958,6 +2033,10 @@ async function buildTrafficBoardRow(
     }
   }
 
+  if (projectedPeriodTrafficGb !== null && trafficGb > 0 && trafficCostUsd > 0) {
+    projectedTrafficCost = formatUsd((trafficCostUsd / trafficGb) * projectedPeriodTrafficGb, locale);
+  }
+
   console.info(
     `Traffic board row query finished ${stringifyTrafficBoardLog({
       ...requestDebug,
@@ -1966,6 +2045,8 @@ async function buildTrafficBoardRow(
       trafficCost,
       trafficCostUsd,
       trafficCostCanRetry,
+      cycleOverspend,
+      cycleOverspendUsd,
       traffic: hasLiveData ? formatTrafficFromGb(trafficGb, locale) : "--",
       matchedDomainCount: summaryResult.matchedDomainCount,
       failureReason: summaryResult.failureReason,
@@ -1988,9 +2069,12 @@ async function buildTrafficBoardRow(
       trafficCost,
       trafficCostUsd,
       trafficCostCanRetry,
+      cycleOverspend,
+      cycleOverspendUsd,
       trafficHint,
       canRetry,
       projectedMonthTraffic: projectedPeriodTrafficGb ? formatTrafficFromGb(projectedPeriodTrafficGb, locale) : null,
+      projectedTrafficCost,
     },
     daysUntilRenewal: base.daysUntilRenewal,
   };
@@ -2840,17 +2924,8 @@ function buildDailySettlementFilters(): ReportFilters {
 
 function getCycleRangeForDate(date: Date, renewalDay: number | null, offsetMinutes = SHANGHAI_OFFSET_MINUTES) {
   const cycle = getCurrentBillingCycleMeta(renewalDay, "zh-CN", date, offsetMinutes);
-  const cycleStartAt = new Date(
-    Date.UTC(cycle.cycleStartYear, cycle.cycleStartMonth - 1, cycle.cycleStartDay, 0, 0, 0, 0) -
-      offsetMinutes * 60 * 1000,
-  );
-  const nextMonthYear = cycle.cycleStartMonth === 12 ? cycle.cycleStartYear + 1 : cycle.cycleStartYear;
-  const nextMonth = cycle.cycleStartMonth === 12 ? 1 : cycle.cycleStartMonth + 1;
-  const nextRenewalDay = Math.min(cycle.normalizedRenewalDay, getDaysInMonth(nextMonthYear, nextMonth));
-  const cycleEndAt = new Date(
-    Date.UTC(nextMonthYear, nextMonth - 1, nextRenewalDay, 0, 0, 0, 0) -
-      offsetMinutes * 60 * 1000,
-  );
+  const cycleStartAt = new Date(cycle.cycleStartUtc);
+  const cycleEndAt = new Date(cycle.cycleEndUtc);
 
   return { cycleStartAt, cycleEndAt };
 }

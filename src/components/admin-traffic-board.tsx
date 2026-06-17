@@ -71,12 +71,12 @@ function formatUsdValue(valueUsd: number, locale: Locale) {
   })} USD`;
 }
 
-function formatTrafficMarkupLabel(value: number, locale: Locale) {
+function formatTrafficMarkupSuffix(value: number, locale: Locale) {
   const displayValue = value.toLocaleString(locale === "en" ? "en-US" : "zh-CN", {
     maximumFractionDigits: 2,
     minimumFractionDigits: value % 1 === 0 ? 0 : 2,
   });
-  return locale === "en" ? `Includes ${displayValue}% markup` : `已含 ${displayValue}% 上浮`;
+  return `(+${displayValue}%)`;
 }
 
 function getRetryTrafficLabel(locale: Locale) {
@@ -228,6 +228,8 @@ export function AdminTrafficBoard({
                   trafficCost: null,
                   trafficCostUsd: 0,
                   trafficCostCanRetry: true,
+                  projectedMonthTraffic: null,
+                  projectedTrafficCost: null,
                   trafficHint:
                     locale === "en"
                       ? "Alibaba Cloud query failed"
@@ -307,6 +309,17 @@ export function AdminTrafficBoard({
         ? "Cycle Projection"
         : "账期预估"
       : t.trafficBoard.projectedMonthTraffic;
+  const tableColumnClassNames = showGiftTrafficProjection
+    ? [
+        "w-[15%]",
+        "w-[15%]",
+        "w-[16%]",
+        "w-[15%]",
+        "w-[12%]",
+        "w-[12%]",
+        "w-[15%] text-center",
+      ]
+    : ["w-[20%]", "w-[20%]", "w-[30%]", "w-[30%] text-center"];
   const sortedRows = useMemo(() => {
     const getRowBucket = (row: TrafficBoardRowState) => {
       if (row.hasLiveData) {
@@ -434,11 +447,11 @@ export function AdminTrafficBoard({
         ) : (
           <DataTable
             compact
+            fitToContainer
+            columnClassNames={tableColumnClassNames}
             headers={[
               t.trafficBoard.customer,
-              t.trafficBoard.renewalDay,
               t.trafficBoard.cycleRange,
-              t.trafficBoard.domains,
               <button
                 key="traffic-sort-header"
                 type="button"
@@ -448,88 +461,109 @@ export function AdminTrafficBoard({
                 <span>{view.trafficLabel}</span>
                 <span className="text-slate-400">{trafficSortDirection === "desc" ? "↓" : "↑"}</span>
               </button>,
-              view.trafficCostLabel,
               ...(showGiftTrafficProjection ? [projectedTrafficLabel] : []),
+              ...(showGiftTrafficProjection ? [t.trafficBoard.cycleWaiverTrafficFee] : []),
+              ...(showGiftTrafficProjection ? [t.trafficBoard.cycleOverspend] : []),
               t.trafficBoard.action,
             ]}
             rows={sortedRows.map((row) => {
+              const showInlineRetryButton = !row.loading && (row.canRetry || row.trafficCostCanRetry);
+              const renewalDayDisplay =
+                canViewTrafficMarkup && row.trafficMarkupPercent
+                  ? `${row.renewalDayDisplay}${formatTrafficMarkupSuffix(row.trafficMarkupPercent, locale)}`
+                  : row.renewalDayDisplay;
               const cells = [
-                <div key={`${row.customerId}-customer`} className="min-w-[150px]">
-                  <div className="flex items-center gap-2">
+                <div key={`${row.customerId}-customer`} className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <span className="font-medium text-slate-950">{row.customerName}</span>
                     <span
-                      className={`inline-flex rounded-full px-2 py-1 text-[11px] font-medium ring-1 ring-inset ${getStatusTone(
+                      className={`inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset ${getStatusTone(
                         row.status,
                       )}`}
                     >
                       {getStatusLabel(row.status, locale)}
                     </span>
                   </div>
+                  <p className="mt-1 text-xs leading-4 text-slate-500">{renewalDayDisplay}</p>
                 </div>,
-                <span key={`${row.customerId}-renewal`} className="whitespace-nowrap text-slate-600">
-                  {row.renewalDayDisplay}
-                </span>,
-                <span key={`${row.customerId}-range`} className="whitespace-nowrap text-slate-600">
-                  {row.cycleRange}
-                </span>,
-                <span key={`${row.customerId}-domains`} className="whitespace-nowrap text-slate-600">
-                  {row.domainCount}
-                </span>,
-                <div key={`${row.customerId}-traffic`} className="min-w-[160px]">
+                <div key={`${row.customerId}-range`} className="min-w-0">
+                  <span className="block text-xs leading-5 text-slate-600">{row.cycleRange}</span>
+                  <p className="text-xs leading-4 text-slate-500">
+                    {locale === "en" ? `Domains: ${row.domainCount}` : `域名：${row.domainCount}`}
+                  </p>
+                </div>,
+                <div key={`${row.customerId}-traffic`} className="min-w-0">
                   {row.loading ? (
                     <div className="flex items-center gap-2">
                       <span className="h-2 w-2 animate-pulse rounded-full bg-rose-400" />
                       <span className="text-xs text-slate-500">{t.adminTrafficBoardPage.loadingTitle}</span>
                     </div>
                   ) : (
-                    <span className="whitespace-nowrap font-medium text-slate-950">
+                    <span className="block text-sm font-medium leading-5 text-slate-950">
                       {row.hasLiveData ? row.traffic : t.trafficBoard.noData}
                     </span>
                   )}
-                  {row.trafficHint ? (
-                    <p className="mt-0.5 text-xs leading-5 text-slate-500">{row.trafficHint}</p>
-                  ) : null}
-                  {row.canRetry && !row.loading ? (
-                    <button
-                      type="button"
-                      onClick={() => void enqueueRowTraffic(row)}
-                      className="mt-1 inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium leading-none text-slate-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-slate-950"
-                    >
-                      <span aria-hidden="true">↻</span>
-                      <span>{getRetryTrafficLabel(locale)}</span>
-                    </button>
-                  ) : null}
-                  {canViewTrafficMarkup && row.hasLiveData && row.trafficMarkupPercent ? (
-                    <p className="mt-0.5 text-xs leading-5 text-slate-500">
-                      {formatTrafficMarkupLabel(row.trafficMarkupPercent, locale)}
-                    </p>
-                  ) : null}
-                </div>,
-              ];
-
-              cells.push(
-                <div key={`${row.customerId}-traffic-cost`} className="min-w-[120px]">
                   {row.trafficCost ? (
-                    <span className="whitespace-nowrap text-slate-600">{row.trafficCost}</span>
+                    <p className="mt-0.5 text-xs font-medium leading-4 text-slate-700">{row.trafficCost}</p>
                   ) : row.trafficCostCanRetry && !row.loading ? (
                     <button
                       type="button"
                       onClick={() => void enqueueRowTraffic(row)}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium leading-none text-slate-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-slate-950"
+                      className="mt-1 inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-medium leading-none text-slate-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-slate-950"
                     >
                       <span aria-hidden="true">↻</span>
                       <span>{getRetryTrafficLabel(locale)}</span>
                     </button>
-                  ) : (
-                    <span className="whitespace-nowrap text-slate-600">--</span>
-                  )}
+                  ) : null}
+                  {row.trafficHint ? (
+                    <p className="mt-0.5 text-xs leading-5 text-slate-500">{row.trafficHint}</p>
+                  ) : null}
+                  {showInlineRetryButton ? (
+                    <button
+                      type="button"
+                      onClick={() => void enqueueRowTraffic(row)}
+                      className="mt-1 inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-medium leading-none text-slate-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-slate-950"
+                    >
+                      <span aria-hidden="true">↻</span>
+                      <span>{getRetryTrafficLabel(locale)}</span>
+                    </button>
+                  ) : null}
                 </div>,
-              );
+              ];
 
               if (showGiftTrafficProjection) {
                 cells.push(
-                  <span key={`${row.customerId}-projected`} className="whitespace-nowrap text-slate-600">
-                    {row.projectedMonthTraffic ?? "--"}
+                  <div key={`${row.customerId}-projected`} className="min-w-0">
+                    <span className="block text-sm font-medium leading-5 text-slate-950">
+                      {row.projectedMonthTraffic ?? "--"}
+                    </span>
+                    <p className="mt-0.5 text-xs font-medium leading-4 text-slate-700">
+                      {row.projectedTrafficCost ?? "--"}
+                    </p>
+                  </div>,
+                );
+              }
+
+              if (showGiftTrafficProjection) {
+                cells.push(
+                  <span
+                    key={`${row.customerId}-cycle-waiver-traffic-fee`}
+                    className="block whitespace-nowrap text-sm text-slate-600"
+                  >
+                    {row.cycleWaiverTrafficFee ?? "--"}
+                  </span>,
+                );
+              }
+
+              if (showGiftTrafficProjection) {
+                cells.push(
+                  <span
+                    key={`${row.customerId}-cycle-overspend`}
+                    className={`block whitespace-nowrap text-sm font-medium ${
+                      row.trafficCost && row.cycleOverspendUsd > 0 ? "text-rose-600" : "text-slate-600"
+                    }`}
+                  >
+                    {row.trafficCost ? row.cycleOverspend ?? "--" : "--"}
                   </span>,
                 );
               }
@@ -538,7 +572,7 @@ export function AdminTrafficBoard({
                 <Link
                   key={`${row.customerId}-action`}
                   href={row.reportHref}
-                  className="inline-flex whitespace-nowrap rounded-full border border-slate-200 px-2.5 py-1 text-xs font-medium leading-none text-slate-700 transition hover:border-rose-200 hover:bg-rose-50 hover:text-slate-950"
+                  className="inline-flex whitespace-nowrap rounded-full border border-slate-200 px-2 py-1 text-[11px] font-medium leading-none text-slate-700 transition hover:border-rose-200 hover:bg-rose-50 hover:text-slate-950"
                 >
                   {t.trafficBoard.openReport}
                 </Link>,

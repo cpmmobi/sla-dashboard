@@ -42,6 +42,8 @@ type TableProps = {
   headers: ReactNode[];
   rows: ReactNode[][];
   compact?: boolean;
+  fitToContainer?: boolean;
+  columnClassNames?: string[];
 };
 
 type DashboardModalProps = {
@@ -969,16 +971,22 @@ export function ActivityList({ items }: { items: ListItem[] }) {
   );
 }
 
-export function DataTable({ headers, rows, compact = false }: TableProps) {
+export function DataTable({
+  headers,
+  rows,
+  compact = false,
+  fitToContainer = false,
+  columnClassNames,
+}: TableProps) {
   return (
-    <div className="overflow-hidden rounded-[24px] border border-slate-200 bg-white">
-      <table className="min-w-full text-left text-sm">
+    <div className={`${fitToContainer ? "overflow-hidden" : "overflow-x-auto"} rounded-[24px] border border-slate-200 bg-white`}>
+      <table className={`${fitToContainer ? "w-full table-fixed" : "min-w-full"} text-left text-sm`}>
         <thead className="bg-slate-50 text-slate-500">
           <tr>
             {headers.map((header, index) => (
               <th
                 key={`header-${index}`}
-                className={`${compact ? "px-4 py-2.5" : "px-4 py-3"} font-medium`}
+                className={`${fitToContainer ? "px-2.5 py-2.5" : compact ? "px-5 py-3" : "px-5 py-3.5"} ${columnClassNames?.[index] ?? ""} font-medium`}
               >
                 {header}
               </th>
@@ -989,7 +997,10 @@ export function DataTable({ headers, rows, compact = false }: TableProps) {
           {rows.map((row, index) => (
             <tr key={`${row[0]}-${index}`} className="border-t border-slate-100 text-slate-700">
               {row.map((cell, cellIndex) => (
-                <td key={`${cell}-${cellIndex}`} className={`${compact ? "px-4 py-3" : "px-4 py-4"}`}>
+                <td
+                  key={`${cell}-${cellIndex}`}
+                  className={`align-top ${fitToContainer ? "px-2.5 py-3" : compact ? "px-5 py-3.5" : "px-5 py-[18px]"} ${columnClassNames?.[cellIndex] ?? ""}`}
+                >
                   {cell}
                 </td>
               ))}

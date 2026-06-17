@@ -214,39 +214,72 @@ function formatLocalDateTime(year: number, month: number, day: number, hour = 0,
   )} ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
-function getCurrentBillingCycleRange(
+function getPreviousYearMonth(year: number, month: number) {
+  return month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 };
+}
+
+function resolveShiftedBillingCycleBoundary(
   renewalDay: number | null | undefined,
+  referenceYear: number,
+  referenceMonth: number,
   offsetMinutes: number,
-  now: Date,
 ) {
   const normalizedRenewalDay =
     typeof renewalDay === "number" && Number.isInteger(renewalDay) && renewalDay >= 1 && renewalDay <= 31
       ? renewalDay
       : 1;
-  const current = getDetailedDatePartsAtOffset(now, offsetMinutes);
-  const currentMonthRenewalDay = Math.min(normalizedRenewalDay, getDaysInMonth(current.year, current.month));
-
-  let cycleYear = current.year;
-  let cycleMonth = current.month;
-
-  if (current.day < currentMonthRenewalDay) {
-    if (cycleMonth === 1) {
-      cycleYear -= 1;
-      cycleMonth = 12;
-    } else {
-      cycleMonth -= 1;
-    }
-  }
-
-  const cycleStartDay = Math.min(normalizedRenewalDay, getDaysInMonth(cycleYear, cycleMonth));
+  const renewalDayInMonth = Math.min(normalizedRenewalDay, getDaysInMonth(referenceYear, referenceMonth));
+  const renewalUtc =
+    Date.UTC(referenceYear, referenceMonth - 1, renewalDayInMonth, 0, 0, 0, 0) - offsetMinutes * 60 * 1000;
+  const boundaryUtc = renewalUtc - 24 * 60 * 60 * 1000;
+  const boundaryLocal = getDetailedDatePartsAtOffset(new Date(boundaryUtc), offsetMinutes);
 
   return {
-    from: formatLocalDateTime(cycleYear, cycleMonth, cycleStartDay, 0, 0),
-    to: formatLocalDateTime(current.year, current.month, current.day, current.hour, current.minute),
-    cycleYear,
-    cycleMonth,
-    cycleStartDay,
+    referenceYear,
+    referenceMonth,
     normalizedRenewalDay,
+    boundaryUtc,
+    boundaryYear: boundaryLocal.year,
+    boundaryMonth: boundaryLocal.month,
+    boundaryDay: boundaryLocal.day,
+  };
+}
+
+function getCurrentBillingCycleRange(
+  renewalDay: number | null | undefined,
+  offsetMinutes: number,
+  now: Date,
+) {
+  const current = getDetailedDatePartsAtOffset(now, offsetMinutes);
+  const currentMonthBoundary = resolveShiftedBillingCycleBoundary(
+    renewalDay,
+    current.year,
+    current.month,
+    offsetMinutes,
+  );
+  const cycleBoundary =
+    now.getTime() >= currentMonthBoundary.boundaryUtc
+      ? currentMonthBoundary
+      : (() => {
+          const previousMonth = getPreviousYearMonth(current.year, current.month);
+          return resolveShiftedBillingCycleBoundary(
+            renewalDay,
+            previousMonth.year,
+            previousMonth.month,
+            offsetMinutes,
+          );
+        })();
+
+  return {
+    from: formatLocalDateTime(cycleBoundary.boundaryYear, cycleBoundary.boundaryMonth, cycleBoundary.boundaryDay, 0, 0),
+    to: formatLocalDateTime(current.year, current.month, current.day, current.hour, current.minute),
+    cycleReferenceYear: cycleBoundary.referenceYear,
+    cycleReferenceMonth: cycleBoundary.referenceMonth,
+    cycleStartYear: cycleBoundary.boundaryYear,
+    cycleStartMonth: cycleBoundary.boundaryMonth,
+    cycleStartDay: cycleBoundary.boundaryDay,
+    cycleStartUtc: cycleBoundary.boundaryUtc,
+    normalizedRenewalDay: cycleBoundary.normalizedRenewalDay,
   };
 }
 
@@ -256,23 +289,29 @@ function getPreviousBillingCycleRange(
   now: Date,
 ) {
   const currentCycle = getCurrentBillingCycleRange(renewalDay, offsetMinutes, now);
-  const previousCycleMonth = currentCycle.cycleMonth === 1 ? 12 : currentCycle.cycleMonth - 1;
-  const previousCycleYear =
-    currentCycle.cycleMonth === 1 ? currentCycle.cycleYear - 1 : currentCycle.cycleYear;
-  const previousCycleStartDay = Math.min(
-    currentCycle.normalizedRenewalDay,
-    getDaysInMonth(previousCycleYear, previousCycleMonth),
+  const previousCycleReference = getPreviousYearMonth(
+    currentCycle.cycleReferenceYear,
+    currentCycle.cycleReferenceMonth,
   );
-  const currentCycleStartUtc =
-    Date.UTC(currentCycle.cycleYear, currentCycle.cycleMonth - 1, currentCycle.cycleStartDay, 0, 0, 0, 0) -
-    offsetMinutes * 60 * 1000;
+  const previousCycleBoundary = resolveShiftedBillingCycleBoundary(
+    renewalDay,
+    previousCycleReference.year,
+    previousCycleReference.month,
+    offsetMinutes,
+  );
   const previousCycleEndLocal = getDetailedDatePartsAtOffset(
-    new Date(currentCycleStartUtc - 60 * 1000),
+    new Date(currentCycle.cycleStartUtc - 60 * 1000),
     offsetMinutes,
   );
 
   return {
-    from: formatLocalDateTime(previousCycleYear, previousCycleMonth, previousCycleStartDay, 0, 0),
+    from: formatLocalDateTime(
+      previousCycleBoundary.boundaryYear,
+      previousCycleBoundary.boundaryMonth,
+      previousCycleBoundary.boundaryDay,
+      0,
+      0,
+    ),
     to: formatLocalDateTime(
       previousCycleEndLocal.year,
       previousCycleEndLocal.month,
