@@ -25,6 +25,7 @@ import {
   defaultReportFilters,
   normalizeBillingCycleReportFilters,
   normalizeClientReportFilters,
+  resolveReportWindow,
   type ReportFilters,
 } from "@/lib/report-query";
 import { Prisma } from "@prisma/client";
@@ -1611,6 +1612,499 @@ function aggregateRegionalTraffic(
   };
 }
 
+function formatLocalDateTimeAtOffset(date: Date, offsetMinutes: number) {
+  const parts = getDatePartsAtOffset(date, offsetMinutes);
+  return formatLocalDateTime(parts.year, parts.month, parts.day, parts.hour, parts.minute);
+}
+
+function formatCountValue(value: number, locale: Locale) {
+  return Math.round(value).toLocaleString(locale === "en" ? "en-US" : "zh-CN");
+}
+
+function formatAverageCountValue(value: number, locale: Locale) {
+  return value.toLocaleString(locale === "en" ? "en-US" : "zh-CN", {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: value % 1 === 0 ? 0 : 2,
+  });
+}
+
+function formatMetricTooltipLabel(tooltipLabel?: string) {
+  if (!tooltipLabel) {
+    return "--";
+  }
+
+  return tooltipLabel.length >= 16 ? tooltipLabel.slice(5, 16) : tooltipLabel;
+}
+
+function formatPercent(value: number, locale: Locale) {
+  return `${value.toLocaleString(locale === "en" ? "en-US" : "zh-CN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}%`;
+}
+
+function isHardcodedMrsukanCutoverCustomer(customer: Pick<CustomerRecord, "authCode">) {
+  return customer.authCode === MRSUKAN_REPORT_CUTOVER.authCode;
+}
+
+function buildHardcodedQueryFiltersForUtcWindow(filters: ReportFilters, startUtc: Date, endUtc: Date): ReportFilters {
+  const offsetMinutes = filters.timeZoneOffsetMinutes ?? 8 * 60;
+
+  return {
+    ...filters,
+    timeRange: "custom",
+    from: formatLocalDateTimeAtOffset(startUtc, offsetMinutes),
+    to: formatLocalDateTimeAtOffset(endUtc, offsetMinutes),
+  };
+}
+
+function resolveHardcodedMrsukanDomainSegments(
+  customer: Pick<CustomerRecord, "authCode">,
+  filters: ReportFilters,
+): HardcodedDomainQuerySegment[] | null {
+  if (!isHardcodedMrsukanCutoverCustomer(customer)) {
+    return null;
+  }
+
+  const window = resolveReportWindow(filters);
+  const queryStartUtc = new Date(window.startTime);
+  const queryEndUtc = new Date(window.endTime);
+  const cutoverUtc = MRSUKAN_REPORT_CUTOVER.cutoverUtc;
+
+  if (queryEndUtc.getTime() <= cutoverUtc.getTime()) {
+    return [
+      {
+        domain: MRSUKAN_REPORT_CUTOVER.legacyDomain,
+        filters,
+      },
+    ];
+  }
+
+  if (queryStartUtc.getTime() >= cutoverUtc.getTime()) {
+    return [
+      {
+        domain: MRSUKAN_REPORT_CUTOVER.nextDomain,
+        filters,
+      },
+    ];
+  }
+
+  return [
+    {
+      domain: MRSUKAN_REPORT_CUTOVER.legacyDomain,
+      filters: buildHardcodedQueryFiltersForUtcWindow(
+        filters,
+        queryStartUtc,
+        new Date(cutoverUtc.getTime() - 60 * 1000),
+      ),
+    },
+    {
+      domain: MRSUKAN_REPORT_CUTOVER.nextDomain,
+      filters: buildHardcodedQueryFiltersForUtcWindow(filters, cutoverUtc, queryEndUtc),
+    },
+  ];
+}
+
+function mergeReportSeriesPoints(reports: LiveDomainReportData[], key: "trafficTrend" | "peakBandwidth") {
+  const pointMap = new Map<string, { label: string; tooltipLabel?: string; value: number }>();
+
+  for (const report of reports) {
+    for (const point of report[key]) {
+      const pointKey = point.tooltipLabel ?? point.label;
+      const current = pointMap.get(pointKey) ?? {
+        label: point.label,
+        tooltipLabel: point.tooltipLabel,
+        value: 0,
+      };
+
+      current.value += point.value;
+      pointMap.set(pointKey, current);
+    }
+  }
+
+  return Array.from(pointMap.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, point]) => ({
+      label: point.label,
+      tooltipLabel: point.tooltipLabel,
+      value: Number(point.value.toFixed(2)),
+    }));
+}
+
+function mergeReportDualSeriesPoints(reports: LiveDomainReportData[]) {
+  const pointMap = new Map<string, { label: string; tooltipLabel?: string; primary: number; secondary: number }>();
+
+  for (const report of reports) {
+    for (const point of report.pvUvTrend) {
+      const pointKey = point.tooltipLabel ?? point.label;
+      const current = pointMap.get(pointKey) ?? {
+        label: point.label,
+        tooltipLabel: point.tooltipLabel,
+        primary: 0,
+        secondary: 0,
+      };
+
+      current.primary += point.primary;
+      current.secondary += point.secondary;
+      pointMap.set(pointKey, current);
+    }
+  }
+
+  return Array.from(pointMap.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, point]) => ({
+      label: point.label,
+      tooltipLabel: point.tooltipLabel,
+      primary: Math.round(point.primary),
+      secondary: Math.round(point.secondary),
+    }));
+}
+
+function mergeReportTables(
+  reports: LiveDomainReportData[],
+  key: "trafficUsageTable" | "audienceUsageTable",
+  locale: Locale,
+) {
+  const rowMap = new Map<string, { trafficGb: number; pv: number; uv: number; peakMbps: number }>();
+
+  for (const report of reports) {
+    for (const row of report[key]) {
+      const current = rowMap.get(row.period) ?? {
+        trafficGb: 0,
+        pv: 0,
+        uv: 0,
+        peakMbps: 0,
+      };
+
+      current.trafficGb += parseTrafficToGb(row.traffic);
+      current.pv += parseLocalizedNumber(row.pv);
+      current.uv += parseLocalizedNumber(row.uv);
+      current.peakMbps += parseBandwidthToMbps(row.peakBps);
+      rowMap.set(row.period, current);
+    }
+  }
+
+  return Array.from(rowMap.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([period, row]) => ({
+      period,
+      traffic: formatTrafficFromGb(row.trafficGb, locale),
+      pv: formatCountValue(row.pv, locale),
+      uv: formatCountValue(row.uv, locale),
+      peakBps: formatBandwidthFromMbps(row.peakMbps, locale),
+    }));
+}
+
+function mergeRegionalTrafficRows(reports: LiveDomainReportData[], locale: Locale) {
+  const rowMap = new Map<
+    string,
+    {
+      region: string;
+      trafficGb: number;
+      costUsd: number;
+      unitPrice: string;
+    }
+  >();
+
+  for (const report of reports) {
+    for (const row of report.regionalTrafficTable) {
+      if (row.regionCode === "TOTAL") {
+        continue;
+      }
+
+      const current = rowMap.get(row.regionCode) ?? {
+        region: row.region,
+        trafficGb: 0,
+        costUsd: 0,
+        unitPrice: row.unitPrice,
+      };
+
+      current.trafficGb += parseTrafficToGb(row.traffic);
+      current.costUsd += parseUsd(row.cost);
+      rowMap.set(row.regionCode, current);
+    }
+  }
+
+  const totalTrafficGb = Array.from(rowMap.values()).reduce((sum, row) => sum + row.trafficGb, 0);
+  const totalCostUsd = Array.from(rowMap.values()).reduce((sum, row) => sum + row.costUsd, 0);
+  const rows = Array.from(rowMap.entries())
+    .map(([regionCode, row]) => ({
+      regionCode,
+      region: row.region,
+      traffic: formatTrafficFromGb(row.trafficGb, locale),
+      share: formatPercent(totalTrafficGb > 0 ? (row.trafficGb / totalTrafficGb) * 100 : 0, locale),
+      unitPrice: row.unitPrice,
+      cost: formatUsd(row.costUsd, locale),
+      trafficGb: row.trafficGb,
+    }))
+    .sort((left, right) => right.trafficGb - left.trafficGb);
+
+  if (rows.length === 0) {
+    return {
+      rows: [] as RegionTrafficRow[],
+      totalCost: "--",
+    };
+  }
+
+  return {
+    rows: [
+      ...rows.map(({ trafficGb: _trafficGb, ...row }) => row),
+      {
+        regionCode: "TOTAL",
+        region: locale === "en" ? "Total" : "总计",
+        traffic: formatTrafficFromGb(totalTrafficGb, locale),
+        share: formatPercent(100, locale),
+        unitPrice: "--",
+        cost: formatUsd(totalCostUsd, locale),
+      },
+    ],
+    totalCost: formatUsd(totalCostUsd, locale),
+  };
+}
+
+function buildMergedLiveReportMetrics(
+  locale: Locale,
+  syncText: string,
+  trafficTrend: LiveDomainReportData["trafficTrend"],
+  peakBandwidth: LiveDomainReportData["peakBandwidth"],
+  pvUvTrend: LiveDomainReportData["pvUvTrend"],
+): Metric[] {
+  const totalTrafficGb = trafficTrend.reduce((sum, point) => sum + point.value, 0);
+  const averageBandwidthMbps =
+    peakBandwidth.length > 0
+      ? peakBandwidth.reduce((sum, point) => sum + point.value, 0) / peakBandwidth.length
+      : 0;
+  const peakBandwidthPoint = peakBandwidth.reduce<(typeof peakBandwidth)[number] | null>(
+    (peak, point) => (!peak || point.value > peak.value ? point : peak),
+    null,
+  );
+  const averageUv =
+    pvUvTrend.length > 0 ? pvUvTrend.reduce((sum, point) => sum + point.secondary, 0) / pvUvTrend.length : 0;
+  const peakUvPoint = pvUvTrend.reduce<(typeof pvUvTrend)[number] | null>(
+    (peak, point) => (!peak || point.secondary > peak.secondary ? point : peak),
+    null,
+  );
+  const averagePv =
+    pvUvTrend.length > 0 ? pvUvTrend.reduce((sum, point) => sum + point.primary, 0) / pvUvTrend.length : 0;
+
+  if (locale === "en") {
+    return [
+      { label: "Total Traffic", value: formatTrafficFromGb(totalTrafficGb, locale), delta: syncText, tone: "brand" },
+      {
+        label: "Average Bandwidth",
+        value: formatBandwidthFromMbps(averageBandwidthMbps, locale),
+        delta: syncText,
+        tone: "success",
+      },
+      {
+        label: "Peak Bandwidth",
+        value: formatBandwidthFromMbps(peakBandwidthPoint?.value ?? 0, locale),
+        delta: syncText,
+        tone: "warning",
+      },
+      {
+        label: "Peak Bandwidth Time",
+        value: formatMetricTooltipLabel(peakBandwidthPoint?.tooltipLabel),
+        delta: syncText,
+        tone: "brand",
+      },
+      {
+        label: "UV Peak",
+        value: formatCountValue(peakUvPoint?.secondary ?? 0, locale),
+        delta: syncText,
+        tone: "warning",
+      },
+      {
+        label: "Average UV",
+        value: formatAverageCountValue(averageUv, locale),
+        delta: syncText,
+        tone: "success",
+      },
+      {
+        label: "UV Peak Time",
+        value: formatMetricTooltipLabel(peakUvPoint?.tooltipLabel),
+        delta: syncText,
+        tone: "brand",
+      },
+      {
+        label: "Average PV",
+        value: formatAverageCountValue(averagePv, locale),
+        delta: syncText,
+        tone: "brand",
+      },
+    ];
+  }
+
+  return [
+    { label: "累计流量", value: formatTrafficFromGb(totalTrafficGb, locale), delta: syncText, tone: "brand" },
+    { label: "平均带宽", value: formatBandwidthFromMbps(averageBandwidthMbps, locale), delta: syncText, tone: "success" },
+    { label: "带宽峰值", value: formatBandwidthFromMbps(peakBandwidthPoint?.value ?? 0, locale), delta: syncText, tone: "warning" },
+    { label: "峰值时间", value: formatMetricTooltipLabel(peakBandwidthPoint?.tooltipLabel), delta: syncText, tone: "brand" },
+    { label: "UV 峰值", value: formatCountValue(peakUvPoint?.secondary ?? 0, locale), delta: syncText, tone: "warning" },
+    { label: "平均 UV", value: formatAverageCountValue(averageUv, locale), delta: syncText, tone: "success" },
+    { label: "UV 峰值时间", value: formatMetricTooltipLabel(peakUvPoint?.tooltipLabel), delta: syncText, tone: "brand" },
+    { label: "平均 PV", value: formatAverageCountValue(averagePv, locale), delta: syncText, tone: "brand" },
+  ];
+}
+
+function mergeLiveDomainReports(
+  reports: LiveDomainReportData[],
+  locale: Locale,
+  filters: ReportFilters,
+): LiveDomainReportData {
+  const trafficTrend = mergeReportSeriesPoints(reports, "trafficTrend");
+  const peakBandwidth = mergeReportSeriesPoints(reports, "peakBandwidth");
+  const pvUvTrend = mergeReportDualSeriesPoints(reports);
+  const trafficUsageTable = mergeReportTables(reports, "trafficUsageTable", locale);
+  const audienceUsageTable = mergeReportTables(reports, "audienceUsageTable", locale);
+  const regionalTrafficComplete = reports.every((report) => report.regionalTrafficComplete !== false);
+  const mergedRegionalTraffic = mergeRegionalTrafficRows(reports, locale);
+  const window = resolveReportWindow(filters);
+  const syncText =
+    locale === "en"
+      ? `Alibaba Cloud • ${window.fromDisplay} - ${window.toDisplay}`
+      : `阿里云 • ${window.fromDisplay} - ${window.toDisplay}`;
+
+  return {
+    metrics: buildMergedLiveReportMetrics(locale, syncText, trafficTrend, peakBandwidth, pvUvTrend),
+    syncText,
+    trafficTrend,
+    peakBandwidth,
+    pvUvTrend,
+    trafficUsageTable,
+    audienceUsageTable,
+    regionalTrafficTable: regionalTrafficComplete ? mergedRegionalTraffic.rows : [],
+    regionalTrafficTotalCost: regionalTrafficComplete ? mergedRegionalTraffic.totalCost : "--",
+    regionalTrafficComplete,
+  };
+}
+
+async function buildHardcodedMrsukanReport(
+  customer: CustomerRecord,
+  filters: ReportFilters,
+  locale: Locale,
+): Promise<LiveDomainReportResult> {
+  const segments = resolveHardcodedMrsukanDomainSegments(customer, filters);
+  if (!segments) {
+    return {
+      data: null,
+      reason: "request_failed",
+    };
+  }
+
+  const reports: LiveDomainReportData[] = [];
+
+  for (const segment of segments) {
+    const result = await fetchLiveDomainReportResult(segment.domain, segment.filters, locale);
+
+    if (result.reason && result.reason !== "empty") {
+      return {
+        data: null,
+        reason: result.reason,
+      };
+    }
+
+    if (result.data) {
+      reports.push(result.data);
+    }
+  }
+
+  if (reports.length === 0) {
+    return {
+      data: null,
+      reason: "empty",
+    };
+  }
+
+  return {
+    data: reports.length === 1 ? reports[0] : mergeLiveDomainReports(reports, locale, filters),
+    reason: null,
+  };
+}
+
+async function buildHardcodedMrsukanTrafficSummary(customer: CustomerRecord, filters: ReportFilters) {
+  const segments = resolveHardcodedMrsukanDomainSegments(customer, filters);
+  if (!segments) {
+    return {
+      totalTrafficGb: 0,
+      matchedDomainCount: 0,
+      failureReason: "request_failed" as LiveDomainReportFailureReason,
+    };
+  }
+
+  let totalTrafficGb = 0;
+  let hasMatchedSegment = false;
+
+  for (const segment of segments) {
+    const result = await fetchLiveDomainTrafficSummaryResult(segment.domain, segment.filters);
+
+    if (result.reason && result.reason !== "empty") {
+      return {
+        totalTrafficGb: 0,
+        matchedDomainCount: 0,
+        failureReason: result.reason,
+      };
+    }
+
+    if (result.data) {
+      hasMatchedSegment = true;
+      totalTrafficGb += result.data.totalTrafficGb;
+    }
+  }
+
+  return {
+    totalTrafficGb: Number(totalTrafficGb.toFixed(2)),
+    matchedDomainCount: hasMatchedSegment ? 1 : 0,
+    failureReason: hasMatchedSegment ? null : ("empty" as LiveDomainReportFailureReason),
+  };
+}
+
+async function buildHardcodedMrsukanRegionalTrafficSummary(
+  customer: CustomerRecord,
+  filters: ReportFilters,
+  locale: Locale,
+) {
+  const segments = resolveHardcodedMrsukanDomainSegments(customer, filters);
+  if (!segments) {
+    return {
+      totalTrafficGb: 0,
+      totalCostUsd: 0,
+      matchedDomainCount: 0,
+      failureReason: "request_failed" as LiveDomainReportFailureReason,
+    };
+  }
+
+  let totalTrafficGb = 0;
+  let totalCostUsd = 0;
+  let hasMatchedSegment = false;
+
+  for (const segment of segments) {
+    const result = await fetchLiveDomainRegionalTrafficSummaryResult(segment.domain, segment.filters, locale);
+
+    if (result.reason && result.reason !== "empty") {
+      return {
+        totalTrafficGb: 0,
+        totalCostUsd: 0,
+        matchedDomainCount: 0,
+        failureReason: result.reason,
+      };
+    }
+
+    if (result.data) {
+      hasMatchedSegment = true;
+      totalTrafficGb += result.data.totalTrafficGb;
+      totalCostUsd += result.data.totalCostUsd;
+    }
+  }
+
+  return {
+    totalTrafficGb: Number(totalTrafficGb.toFixed(2)),
+    totalCostUsd: Number(totalCostUsd.toFixed(2)),
+    matchedDomainCount: hasMatchedSegment ? 1 : 0,
+    failureReason: hasMatchedSegment ? null : ("empty" as LiveDomainReportFailureReason),
+  };
+}
+
 function buildAllDomainsTrafficMetrics(
   locale: Locale,
   syncText: string,
@@ -1952,7 +2446,9 @@ async function buildTrafficBoardRow(
     };
   }
 
-  const summaryResult = await buildAllDomainsRegionalTrafficSummary(customer.domains, base.filters, locale);
+  const summaryResult = isHardcodedMrsukanCutoverCustomer(customer)
+    ? await buildHardcodedMrsukanRegionalTrafficSummary(customer, base.filters, locale)
+    : await buildAllDomainsRegionalTrafficSummary(customer.domains, base.filters, locale);
   const hasLiveData = summaryResult.matchedDomainCount > 0;
   const trafficGb = hasLiveData
     ? applyTrafficMarkupToGb(summaryResult.totalTrafficGb, customer.trafficMarkupPercent)
@@ -2009,7 +2505,9 @@ async function buildTrafficBoardRow(
       projectedPeriodTrafficSource = "actual_only";
     } else {
       const recent72HoursWindow = buildRollingHoursTrafficFilters(72, now);
-      const recent72HoursResult = await buildAllDomainsTrafficSummary(customer.domains, recent72HoursWindow.filters);
+      const recent72HoursResult = isHardcodedMrsukanCutoverCustomer(customer)
+        ? await buildHardcodedMrsukanTrafficSummary(customer, recent72HoursWindow.filters)
+        : await buildAllDomainsTrafficSummary(customer.domains, recent72HoursWindow.filters);
 
       if (recent72HoursResult.matchedDomainCount > 0 || recent72HoursResult.failureReason === "empty") {
         const recent72HoursTrafficGb =
@@ -2865,6 +3363,17 @@ export async function getAdminView(locale: Locale, adminSession: AdminSession) {
 
 const SHANGHAI_OFFSET_MINUTES = 8 * 60;
 type PrismaTx = Prisma.TransactionClient;
+type HardcodedDomainQuerySegment = {
+  domain: string;
+  filters: ReportFilters;
+};
+
+const MRSUKAN_REPORT_CUTOVER = {
+  authCode: "69675488b693b936d0a409a0",
+  legacyDomain: "rspn.sla.homes",
+  nextDomain: "mrsukan.sla.homes",
+  cutoverUtc: new Date(Date.UTC(2026, 5, 17, 16, 0, 0, 0)),
+} as const;
 
 function roundUsd(value: number) {
   return Number(value.toFixed(2));
@@ -3668,14 +4177,19 @@ export async function getAdminReportRecordsWithFilters(
 
     if (selectedCustomer && selectedDomain) {
       try {
-        allDomainsReportResult =
-          selectedDomain === ALL_CLIENT_DOMAINS
-            ? await buildAllDomainsTrafficReport(selectedCustomer.domains, effectiveFilters, locale)
-            : null;
-        liveReportResult =
-          selectedDomain === ALL_CLIENT_DOMAINS
-            ? allDomainsReportResult?.report ?? null
-            : await fetchLiveDomainReport(selectedDomain, effectiveFilters, locale);
+        if (isHardcodedMrsukanCutoverCustomer(selectedCustomer) && selectedDomain !== ALL_CLIENT_DOMAINS) {
+          const hardcodedReportResult = await buildHardcodedMrsukanReport(selectedCustomer, effectiveFilters, locale);
+          liveReportResult = hardcodedReportResult.data;
+        } else {
+          allDomainsReportResult =
+            selectedDomain === ALL_CLIENT_DOMAINS
+              ? await buildAllDomainsTrafficReport(selectedCustomer.domains, effectiveFilters, locale)
+              : null;
+          liveReportResult =
+            selectedDomain === ALL_CLIENT_DOMAINS
+              ? allDomainsReportResult?.report ?? null
+              : await fetchLiveDomainReport(selectedDomain, effectiveFilters, locale);
+        }
       } catch (error) {
         console.error("Failed to load live admin report", {
           customerId: selectedCustomer.id,
@@ -3803,9 +4317,12 @@ export async function getClientDashboard(
   const allDomainsReportResult = shouldAggregateAllDomains
     ? await buildAllDomainsTrafficReport(customer.domains, effectiveFilters, locale)
     : null;
-  const liveReport = shouldAggregateAllDomains
-    ? allDomainsReportResult?.report ?? null
-    : await fetchLiveDomainReport(selectedDomain, effectiveFilters, locale);
+  const liveReport =
+    isHardcodedMrsukanCutoverCustomer(customer) && !shouldAggregateAllDomains
+      ? (await buildHardcodedMrsukanReport(customer, effectiveFilters, locale)).data
+      : shouldAggregateAllDomains
+        ? allDomainsReportResult?.report ?? null
+        : await fetchLiveDomainReport(selectedDomain, effectiveFilters, locale);
   const adjustedLiveReport = liveReport
     ? applyTrafficMarkupToLiveReportData(liveReport, customer.trafficMarkupPercent, locale)
     : liveReport;
