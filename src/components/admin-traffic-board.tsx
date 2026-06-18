@@ -50,6 +50,10 @@ function shouldShowGiftTrafficProjection(period: TrafficBoardPeriod) {
   return period === "cycle" || period === "lastCycle";
 }
 
+function isNewCustomerGiftPeriod(period: TrafficBoardPeriod) {
+  return period === "newCustomerGift";
+}
+
 function formatTrafficFromGb(valueGb: number, locale: Locale) {
   if (valueGb >= 1024) {
     return `${(valueGb / 1024).toLocaleString(locale === "en" ? "en-US" : "zh-CN", {
@@ -98,6 +102,7 @@ export function AdminTrafficBoard({
   const periods: TrafficBoardPeriod[] = [
     "cycle",
     "lastCycle",
+    "newCustomerGift",
     "today",
     "last24",
     "last3",
@@ -228,6 +233,8 @@ export function AdminTrafficBoard({
                   trafficCost: null,
                   trafficCostUsd: 0,
                   trafficCostCanRetry: true,
+                  remainingBalance: null,
+                  remainingBalanceUsd: 0,
                   projectedMonthTraffic: null,
                   projectedTrafficCost: null,
                   trafficHint:
@@ -303,13 +310,18 @@ export function AdminTrafficBoard({
   const totalTrafficCostUsd = rows.reduce((sum, row) => sum + row.trafficCostUsd, 0);
   const liveCustomerCount = rows.filter((row) => row.hasLiveData).length;
   const showGiftTrafficProjection = shouldShowGiftTrafficProjection(view.period);
+  const showNewCustomerGiftView = isNewCustomerGiftPeriod(view.period);
+  const totalRechargeUsd = rows.reduce((sum, row) => sum + row.cumulativeRechargeUsd, 0);
+  const totalRemainingBalanceUsd = rows.reduce((sum, row) => sum + row.remainingBalanceUsd, 0);
   const projectedTrafficLabel =
     view.period === "cycle" || view.period === "lastCycle"
       ? locale === "en"
         ? "Cycle Projection"
         : "账期预估"
       : t.trafficBoard.projectedMonthTraffic;
-  const tableColumnClassNames = showGiftTrafficProjection
+  const tableColumnClassNames = showNewCustomerGiftView
+    ? ["w-[15%]", "w-[15%]", "w-[18%]", "w-[14%]", "w-[14%]", "w-[14%]", "w-[10%] text-center"]
+    : showGiftTrafficProjection
     ? [
         "w-[15%]",
         "w-[15%]",
@@ -340,66 +352,117 @@ export function AdminTrafficBoard({
         return bucketDifference;
       }
 
+      if (
+        showNewCustomerGiftView &&
+        left.hasLiveData &&
+        right.hasLiveData &&
+        left.remainingBalanceUsd !== right.remainingBalanceUsd
+      ) {
+        return left.remainingBalanceUsd - right.remainingBalanceUsd;
+      }
+
       if (left.hasLiveData && right.hasLiveData && left.trafficGb !== right.trafficGb) {
         return trafficSortDirection === "desc" ? right.trafficGb - left.trafficGb : left.trafficGb - right.trafficGb;
       }
 
       return left.customerName.localeCompare(right.customerName);
     });
-  }, [rows, trafficSortDirection]);
-  const metrics = [
-    {
-      label: locale === "en" ? "Managed Customers" : "归属客户",
-      value: String(view.summary.customerCount),
-      delta: locale === "en" ? "Current visible scope" : "当前可见范围",
-      tone: "brand" as const,
-    },
-    {
-      label: view.trafficLabel,
-      value: resolvedCount > 0 ? formatTrafficFromGb(totalTrafficGb, locale) : "--",
-      delta:
-        requestableCount > 0
-          ? locale === "en"
-            ? `Loaded ${resolvedCount}/${requestableCount} customers`
-            : `已完成 ${resolvedCount}/${requestableCount} 个客户查询`
-          : locale === "en"
-            ? "No active traffic queries"
-            : "当前没有可查询的流量数据",
-      tone: "success" as const,
-    },
-    {
-      label: t.adminTrafficBoardPage.totalTrafficCost,
-      value: resolvedCount > 0 ? formatUsdValue(totalTrafficCostUsd, locale) : "--",
-      delta:
-        requestableCount > 0
-          ? locale === "en"
-            ? `Loaded ${resolvedCount}/${requestableCount} customers`
-            : `已完成 ${resolvedCount}/${requestableCount} 个客户查询`
-          : locale === "en"
-            ? "No active traffic queries"
-            : "当前没有可查询的流量费用",
-      tone: "warning" as const,
-    },
-    {
-      label: locale === "en" ? "Customers With Data" : "有数据客户",
-      value: resolvedCount > 0 ? String(liveCustomerCount) : "--",
-      delta:
-        requestableCount > 0
-          ? locale === "en"
-            ? `Loaded ${resolvedCount}/${requestableCount} customers`
-            : `已完成 ${resolvedCount}/${requestableCount} 个客户查询`
-          : locale === "en"
-            ? "Alibaba Cloud traffic unavailable"
-            : "暂无可查询的阿里云流量",
-      tone: "warning" as const,
-    },
-    {
-      label: locale === "en" ? "Renewing Soon" : "近 3 天续费",
-      value: String(view.summary.dueSoonCount),
-      delta: locale === "en" ? "Within the next 3 days" : "便于及时提醒充值",
-      tone: "brand" as const,
-    },
-  ];
+  }, [rows, showNewCustomerGiftView, trafficSortDirection]);
+  const metrics = showNewCustomerGiftView
+    ? [
+        {
+          label: locale === "en" ? "Gift Customers" : "赠送客户",
+          value: String(view.summary.customerCount),
+          delta:
+            locale === "en"
+              ? "Customers with new-customer gift credit"
+              : "仅展示设置了新客赠送的客户",
+          tone: "brand" as const,
+        },
+        {
+          label: view.trafficLabel,
+          value: resolvedCount > 0 ? formatTrafficFromGb(totalTrafficGb, locale) : "--",
+          delta:
+            locale === "en"
+              ? "From 2026-05-28 until now"
+              : "从 2026-05-28 到当前",
+          tone: "success" as const,
+        },
+        {
+          label: t.adminTrafficBoardPage.totalTrafficCost,
+          value: resolvedCount > 0 ? formatUsdValue(totalTrafficCostUsd, locale) : "--",
+          delta: locale === "en" ? "Alibaba Cloud cumulative cost" : "阿里云累计消耗费用",
+          tone: "warning" as const,
+        },
+        {
+          label: locale === "en" ? "Cumulative Recharge" : "累计充值",
+          value: formatUsdValue(totalRechargeUsd, locale),
+          delta:
+            locale === "en"
+              ? "Manual record from customer management"
+              : "客户管理里手工记录",
+          tone: "brand" as const,
+        },
+        {
+          label: locale === "en" ? "Remaining Balance" : "剩余金额",
+          value: resolvedCount > 0 ? formatUsdValue(totalRemainingBalanceUsd, locale) : "--",
+          delta: locale === "en" ? "Gift + recharge - cost" : "充值 + 赠送 - 消耗",
+          tone: totalRemainingBalanceUsd < 0 ? ("warning" as const) : ("success" as const),
+        },
+      ]
+    : [
+        {
+          label: locale === "en" ? "Managed Customers" : "归属客户",
+          value: String(view.summary.customerCount),
+          delta: locale === "en" ? "Current visible scope" : "当前可见范围",
+          tone: "brand" as const,
+        },
+        {
+          label: view.trafficLabel,
+          value: resolvedCount > 0 ? formatTrafficFromGb(totalTrafficGb, locale) : "--",
+          delta:
+            requestableCount > 0
+              ? locale === "en"
+                ? `Loaded ${resolvedCount}/${requestableCount} customers`
+                : `已完成 ${resolvedCount}/${requestableCount} 个客户查询`
+              : locale === "en"
+                ? "No active traffic queries"
+                : "当前没有可查询的流量数据",
+          tone: "success" as const,
+        },
+        {
+          label: t.adminTrafficBoardPage.totalTrafficCost,
+          value: resolvedCount > 0 ? formatUsdValue(totalTrafficCostUsd, locale) : "--",
+          delta:
+            requestableCount > 0
+              ? locale === "en"
+                ? `Loaded ${resolvedCount}/${requestableCount} customers`
+                : `已完成 ${resolvedCount}/${requestableCount} 个客户查询`
+              : locale === "en"
+                ? "No active traffic queries"
+                : "当前没有可查询的流量费用",
+          tone: "warning" as const,
+        },
+        {
+          label: locale === "en" ? "Customers With Data" : "有数据客户",
+          value: resolvedCount > 0 ? String(liveCustomerCount) : "--",
+          delta:
+            requestableCount > 0
+              ? locale === "en"
+                ? `Loaded ${resolvedCount}/${requestableCount} customers`
+                : `已完成 ${resolvedCount}/${requestableCount} 个客户查询`
+              : locale === "en"
+                ? "Alibaba Cloud traffic unavailable"
+                : "暂无可查询的阿里云流量",
+          tone: "warning" as const,
+        },
+        {
+          label: locale === "en" ? "Renewing Soon" : "近 3 天续费",
+          value: String(view.summary.dueSoonCount),
+          delta: locale === "en" ? "Within the next 3 days" : "便于及时提醒充值",
+          tone: "brand" as const,
+        },
+      ];
 
   return (
     <div className="space-y-3">
@@ -464,6 +527,9 @@ export function AdminTrafficBoard({
               ...(showGiftTrafficProjection ? [projectedTrafficLabel] : []),
               ...(showGiftTrafficProjection ? [t.trafficBoard.cycleWaiverTrafficFee] : []),
               ...(showGiftTrafficProjection ? [t.trafficBoard.cycleOverspend] : []),
+              ...(showNewCustomerGiftView ? [t.trafficBoard.newCustomerGiftCredit] : []),
+              ...(showNewCustomerGiftView ? [t.trafficBoard.cumulativeRecharge] : []),
+              ...(showNewCustomerGiftView ? [t.trafficBoard.remainingBalance] : []),
               t.trafficBoard.action,
             ]}
             rows={sortedRows.map((row) => {
@@ -564,6 +630,29 @@ export function AdminTrafficBoard({
                     }`}
                   >
                     {row.trafficCost ? row.cycleOverspend ?? "--" : "--"}
+                  </span>,
+                );
+              }
+
+              if (showNewCustomerGiftView) {
+                cells.push(
+                  <span key={`${row.customerId}-new-customer-gift`} className="block whitespace-nowrap text-sm text-slate-600">
+                    {row.newCustomerGiftCredit ?? "--"}
+                  </span>,
+                );
+                cells.push(
+                  <span key={`${row.customerId}-cumulative-recharge`} className="block whitespace-nowrap text-sm text-slate-600">
+                    {row.cumulativeRecharge ?? "--"}
+                  </span>,
+                );
+                cells.push(
+                  <span
+                    key={`${row.customerId}-remaining-balance`}
+                    className={`block whitespace-nowrap text-sm font-medium ${
+                      row.remainingBalance !== null && row.remainingBalanceUsd < 0 ? "text-rose-600" : "text-slate-600"
+                    }`}
+                  >
+                    {row.remainingBalance ?? "--"}
                   </span>,
                 );
               }

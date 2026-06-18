@@ -44,6 +44,8 @@ export async function POST(request: Request) {
     monthlyGiftCreditUsd: typeof body?.monthlyGiftCreditUsd === "number" ? body.monthlyGiftCreditUsd : null,
     cumulativeGiftCreditUsd:
       typeof body?.cumulativeGiftCreditUsd === "number" ? body.cumulativeGiftCreditUsd : null,
+    cumulativeRechargeUsd:
+      typeof body?.cumulativeRechargeUsd === "number" ? body.cumulativeRechargeUsd : null,
     trafficMarkupPercent:
       typeof body?.trafficMarkupPercent === "number"
         ? body.trafficMarkupPercent

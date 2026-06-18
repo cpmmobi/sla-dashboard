@@ -19,6 +19,7 @@ function parseTrafficBoardPeriod(value: string | null): TrafficBoardPeriod {
     value === "last30" ||
     value === "currentMonth" ||
     value === "lastMonth" ||
+    value === "newCustomerGift" ||
     value === "lastCycle" ||
     value === "cycle"
     ? value

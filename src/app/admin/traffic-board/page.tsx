@@ -13,6 +13,7 @@ function parseTrafficBoardPeriod(value: string | string[] | undefined): TrafficB
     value === "last30" ||
     value === "currentMonth" ||
     value === "lastMonth" ||
+    value === "newCustomerGift" ||
     value === "lastCycle" ||
     value === "cycle"
     ? value

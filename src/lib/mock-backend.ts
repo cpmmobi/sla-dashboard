@@ -22,6 +22,7 @@ import { ALL_CLIENT_DOMAINS } from "@/lib/client-report-constants";
 import { CustomerStatus, Locale } from "@/lib/i18n";
 import { prisma } from "@/lib/prisma";
 import {
+  CLIENT_REPORT_MIN_DATE,
   defaultReportFilters,
   normalizeBillingCycleReportFilters,
   normalizeClientReportFilters,
@@ -41,6 +42,7 @@ export type CustomerRecord = {
   renewalDay: number | null;
   monthlyGiftCreditUsd: number | null;
   cumulativeGiftCreditUsd: number | null;
+  cumulativeRechargeUsd: number | null;
   trafficMarkupPercent: number | null;
 };
 
@@ -186,6 +188,7 @@ export type SettlementCustomerDetailView = {
 export type TrafficBoardPeriod =
   | "cycle"
   | "lastCycle"
+  | "newCustomerGift"
   | "today"
   | "last24"
   | "last3"
@@ -211,6 +214,12 @@ export type TrafficBoardRow = {
   cycleWaiverTrafficFee: string | null;
   cycleOverspend: string | null;
   cycleOverspendUsd: number;
+  newCustomerGiftCredit: string | null;
+  newCustomerGiftCreditUsd: number;
+  cumulativeRecharge: string | null;
+  cumulativeRechargeUsd: number;
+  remainingBalance: string | null;
+  remainingBalanceUsd: number;
   trafficHint: string | null;
   canRetry: boolean;
   trafficMarkupPercent: number | null;
@@ -322,6 +331,14 @@ function normalizeRenewalDay(value?: number | null): number | null {
 }
 
 function normalizeGiftCreditUsd(value?: number | null): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+
+  return value > 0 ? Number(value.toFixed(2)) : null;
+}
+
+function normalizeRechargeUsd(value?: number | null): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return null;
   }
@@ -460,6 +477,7 @@ function toCustomerRecord(customer: {
   renewalDay: number | null;
   monthlyGiftCreditUsd?: number | null;
   cumulativeGiftCreditUsd?: number | null;
+  cumulativeRechargeUsd?: number | null;
   monthlyGiftTrafficGb?: number | null;
   trafficMarkupPercent: number | null;
 }): CustomerRecord {
@@ -477,6 +495,7 @@ function toCustomerRecord(customer: {
     renewalDay: normalizeRenewalDay(customer.renewalDay),
     monthlyGiftCreditUsd: normalizeGiftCreditUsd(customer.monthlyGiftCreditUsd),
     cumulativeGiftCreditUsd: normalizeGiftCreditUsd(customer.cumulativeGiftCreditUsd),
+    cumulativeRechargeUsd: normalizeRechargeUsd(customer.cumulativeRechargeUsd),
     trafficMarkupPercent: normalizeTrafficMarkupPercent(customer.trafficMarkupPercent),
   };
 }
@@ -495,6 +514,7 @@ const customerCoreSelect = {
   renewalDay: true,
   monthlyGiftCreditUsd: true,
   cumulativeGiftCreditUsd: true,
+  cumulativeRechargeUsd: true,
   trafficMarkupPercent: true,
 } as const;
 
@@ -869,6 +889,10 @@ function shouldShowGiftTrafficProjection(period: TrafficBoardPeriod) {
   return period === "cycle" || period === "lastCycle";
 }
 
+function isNewCustomerGiftTrafficPeriod(period: TrafficBoardPeriod) {
+  return period === "newCustomerGift";
+}
+
 function buildTrafficBoardFilters(period: TrafficBoardPeriod, renewalDay: number | null, locale: Locale, now: Date) {
   if (period === "cycle") {
     return getCurrentBillingCycleMeta(renewalDay, locale, now);
@@ -887,6 +911,27 @@ function buildTrafficBoardFilters(period: TrafficBoardPeriod, renewalDay: number
     timeZone: "Asia/Shanghai",
     timeZoneOffsetMinutes: 8 * 60,
   };
+
+  if (period === "newCustomerGift") {
+    const [startYear, startMonth, startDay] = CLIENT_REPORT_MIN_DATE.split("-").map(Number);
+
+    return {
+      filters: {
+        ...baseFilters,
+        from: formatLocalDateTime(startYear, startMonth, startDay, 0, 0),
+        to: formatLocalDateTime(nowParts.year, nowParts.month, nowParts.day, nowParts.hour, nowParts.minute),
+      },
+      cycleRange: `${formatBillingRangeDate(startMonth, startDay, locale)} - ${formatBillingRangeDate(
+        nowParts.month,
+        nowParts.day,
+        locale,
+      )}`,
+      renewalDayDisplay: locale === "en" ? "New Customer Gift" : "新客赠送",
+      daysUntilRenewal: 0,
+      windowElapsedDays: null,
+      windowTotalDays: null,
+    };
+  }
 
   if (period === "last24") {
     const startParts = getDatePartsAtOffset(new Date(now.getTime() - 24 * 60 * 60 * 1000), 8 * 60);
@@ -1052,6 +1097,10 @@ function buildTrafficBoardReportHref(
 
 function getTrafficMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
   if (locale === "en") {
+    if (period === "newCustomerGift") {
+      return "Gift Consumption Traffic";
+    }
+
     if (period === "today") {
       return "Today's Traffic";
     }
@@ -1087,6 +1136,10 @@ function getTrafficMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
     return "今日流量";
   }
 
+  if (period === "newCustomerGift") {
+    return "赠送消耗流量";
+  }
+
   if (period === "last24") {
     return "近 24 小时流量";
   }
@@ -1116,6 +1169,10 @@ function getTrafficMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
 
 function getTrafficCostMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
   if (locale === "en") {
+    if (period === "newCustomerGift") {
+      return "Gift Consumption Cost";
+    }
+
     if (period === "today") {
       return "Today Cost";
     }
@@ -1149,6 +1206,10 @@ function getTrafficCostMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
 
   if (period === "today") {
     return "今日流量费用";
+  }
+
+  if (period === "newCustomerGift") {
+    return "赠送消耗费用";
   }
 
   if (period === "last24") {
@@ -1237,6 +1298,10 @@ function getTrafficBoardHint(
 
 function getTrafficBoardCycleHint(locale: Locale, period: TrafficBoardPeriod) {
   if (locale === "en") {
+    if (period === "newCustomerGift") {
+      return `Shows only customers with new-customer gift credit, from ${CLIENT_REPORT_MIN_DATE} until now in Asia/Shanghai.`;
+    }
+
     if (period === "cycle") {
       return "Billing-cycle traffic is accumulated from the day before each customer's renewal day to now, using Asia/Shanghai.";
     }
@@ -1270,6 +1335,10 @@ function getTrafficBoardCycleHint(locale: Locale, period: TrafficBoardPeriod) {
 
   if (period === "cycle") {
     return "账期流量会从每个客户续费日前一天开始累计到当前，按北京时间统计。";
+  }
+
+  if (period === "newCustomerGift") {
+    return `当前仅展示设置了新客赠送的客户，统计范围为 ${CLIENT_REPORT_MIN_DATE} 00:00 到当前，按北京时间统计。`;
   }
 
   if (period === "today") {
@@ -1308,8 +1377,46 @@ function buildTrafficBoardMetrics(
   const customerCount = rows.length;
   const totalTrafficGb = rows.reduce((sum, row) => sum + row.trafficGb, 0);
   const liveCustomerCount = rows.filter((row) => row.hasLiveData).length;
+  const totalTrafficCostUsd = rows.reduce((sum, row) => sum + row.trafficCostUsd, 0);
+  const totalRechargeUsd = rows.reduce((sum, row) => sum + row.cumulativeRechargeUsd, 0);
+  const totalRemainingBalanceUsd = rows.reduce((sum, row) => sum + row.remainingBalanceUsd, 0);
 
   if (locale === "en") {
+    if (period === "newCustomerGift") {
+      return [
+        {
+          label: "Gift Customers",
+          value: String(customerCount),
+          delta: "Customers with new-customer gift credit",
+          tone: "brand",
+        },
+        {
+          label: getTrafficMetricLabel(locale, period),
+          value: formatTrafficFromGb(totalTrafficGb, locale),
+          delta: `From ${CLIENT_REPORT_MIN_DATE} until now`,
+          tone: "success",
+        },
+        {
+          label: getTrafficCostMetricLabel(locale, period),
+          value: formatUsd(totalTrafficCostUsd, locale),
+          delta: "Alibaba Cloud cumulative cost",
+          tone: "warning",
+        },
+        {
+          label: "Cumulative Recharge",
+          value: formatUsd(totalRechargeUsd, locale),
+          delta: "Manual record from customer management",
+          tone: "brand",
+        },
+        {
+          label: "Remaining Balance",
+          value: formatUsd(totalRemainingBalanceUsd, locale),
+          delta: "Gift + recharge - cost",
+          tone: totalRemainingBalanceUsd < 0 ? "warning" : "success",
+        },
+      ];
+    }
+
     return [
       {
         label: "Managed Customers",
@@ -1349,6 +1456,41 @@ function buildTrafficBoardMetrics(
         value: String(dueSoonCount),
         delta: "Within the next 3 days",
         tone: "brand",
+      },
+    ];
+  }
+
+  if (period === "newCustomerGift") {
+    return [
+      {
+        label: "赠送客户",
+        value: String(customerCount),
+        delta: "仅展示设置了新客赠送的客户",
+        tone: "brand",
+      },
+      {
+        label: getTrafficMetricLabel(locale, period),
+        value: formatTrafficFromGb(totalTrafficGb, locale),
+        delta: `从 ${CLIENT_REPORT_MIN_DATE} 到当前`,
+        tone: "success",
+      },
+      {
+        label: getTrafficCostMetricLabel(locale, period),
+        value: formatUsd(totalTrafficCostUsd, locale),
+        delta: "阿里云累计消耗费用",
+        tone: "warning",
+      },
+      {
+        label: "累计充值",
+        value: formatUsd(totalRechargeUsd, locale),
+        delta: "客户管理里手工记录",
+        tone: "brand",
+      },
+      {
+        label: "剩余金额",
+        value: formatUsd(totalRemainingBalanceUsd, locale),
+        delta: "充值 + 赠送 - 消耗",
+        tone: totalRemainingBalanceUsd < 0 ? "warning" : "success",
       },
     ];
   }
@@ -2376,6 +2518,16 @@ function buildTrafficBoardBaseRow(
       : null,
     cycleOverspend: formatUsd(0, locale),
     cycleOverspendUsd: 0,
+    newCustomerGiftCredit: customer.cumulativeGiftCreditUsd
+      ? formatUsd(customer.cumulativeGiftCreditUsd, locale)
+      : null,
+    newCustomerGiftCreditUsd: customer.cumulativeGiftCreditUsd ?? 0,
+    cumulativeRecharge: customer.cumulativeRechargeUsd
+      ? formatUsd(customer.cumulativeRechargeUsd, locale)
+      : null,
+    cumulativeRechargeUsd: customer.cumulativeRechargeUsd ?? 0,
+    remainingBalance: null,
+    remainingBalanceUsd: 0,
     trafficHint:
       customer.status !== "正常"
         ? getTrafficBoardHint(locale, "inactive")
@@ -2498,6 +2650,10 @@ async function buildTrafficBoardRow(
   const cycleWaiverTrafficFeeUsd = normalizeGiftCreditUsd(customer.monthlyGiftCreditUsd) ?? 0;
   const cycleOverspendUsd = Math.max(trafficCostUsd - cycleWaiverTrafficFeeUsd, 0);
   const cycleOverspend = formatUsd(cycleOverspendUsd, locale);
+  const newCustomerGiftCreditUsd = normalizeGiftCreditUsd(customer.cumulativeGiftCreditUsd) ?? 0;
+  const cumulativeRechargeUsd = normalizeRechargeUsd(customer.cumulativeRechargeUsd) ?? 0;
+  const remainingBalanceUsd = Number((newCustomerGiftCreditUsd + cumulativeRechargeUsd - trafficCostUsd).toFixed(2));
+  const remainingBalance = formatUsd(remainingBalanceUsd, locale);
 
   if (shouldShowGiftTrafficProjection(period) && selectedTrafficAvailable && currentWindowHours) {
     if (remainingWindowHours <= 0) {
@@ -2569,6 +2725,16 @@ async function buildTrafficBoardRow(
       trafficCostCanRetry,
       cycleOverspend,
       cycleOverspendUsd,
+      newCustomerGiftCredit: customer.cumulativeGiftCreditUsd
+        ? formatUsd(customer.cumulativeGiftCreditUsd, locale)
+        : null,
+      newCustomerGiftCreditUsd,
+      cumulativeRecharge: customer.cumulativeRechargeUsd
+        ? formatUsd(customer.cumulativeRechargeUsd, locale)
+        : null,
+      cumulativeRechargeUsd,
+      remainingBalance: hasLiveData ? remainingBalance : null,
+      remainingBalanceUsd: hasLiveData ? remainingBalanceUsd : 0,
       trafficHint,
       canRetry,
       projectedMonthTraffic: projectedPeriodTrafficGb ? formatTrafficFromGb(projectedPeriodTrafficGb, locale) : null,
@@ -2584,7 +2750,9 @@ export async function getTrafficBoardShellView(
   period: TrafficBoardPeriod = "cycle",
   now = new Date(),
 ): Promise<TrafficBoardShellView> {
-  const customers: CustomerRecord[] = (await getCustomersForAdmin(adminSession)).map(toCustomerRecord);
+  const customers: CustomerRecord[] = (await getCustomersForAdmin(adminSession))
+    .map(toCustomerRecord)
+    .filter((customer) => (isNewCustomerGiftTrafficPeriod(period) ? (customer.cumulativeGiftCreditUsd ?? 0) > 0 : true));
   const rowsWithMeta = customers.map((customer) => buildTrafficBoardBaseRow(customer, locale, period, now));
   const generatedAt = formatLocalDateTime(
     ...(() => {
@@ -2633,7 +2801,9 @@ export async function getTrafficBoardView(
   period: TrafficBoardPeriod = "cycle",
   now = new Date(),
 ): Promise<TrafficBoardView> {
-  const customers: CustomerRecord[] = (await getCustomersForAdmin(adminSession)).map(toCustomerRecord);
+  const customers: CustomerRecord[] = (await getCustomersForAdmin(adminSession))
+    .map(toCustomerRecord)
+    .filter((customer) => (isNewCustomerGiftTrafficPeriod(period) ? (customer.cumulativeGiftCreditUsd ?? 0) > 0 : true));
 
   const rows = await Promise.all(
     customers.map((customer) => buildTrafficBoardRow(customer, locale, period, now)),
@@ -2903,6 +3073,7 @@ export async function createCustomer(input: {
   renewalDay?: number | null;
   monthlyGiftCreditUsd?: number | null;
   cumulativeGiftCreditUsd?: number | null;
+  cumulativeRechargeUsd?: number | null;
   trafficMarkupPercent?: number | null;
   notes?: string;
 }) {
@@ -2913,6 +3084,7 @@ export async function createCustomer(input: {
   const renewalDay = normalizeRenewalDay(input.renewalDay);
   const monthlyGiftCreditUsd = normalizeGiftCreditUsd(input.monthlyGiftCreditUsd);
   const cumulativeGiftCreditUsd = normalizeGiftCreditUsd(input.cumulativeGiftCreditUsd);
+  const cumulativeRechargeUsd = normalizeRechargeUsd(input.cumulativeRechargeUsd);
   const trafficMarkupPercent = isSuperAdmin(input.adminSession)
     ? normalizeTrafficMarkupPercent(input.trafficMarkupPercent)
     : null;
@@ -2930,6 +3102,7 @@ export async function createCustomer(input: {
       renewalDay,
       monthlyGiftCreditUsd,
       cumulativeGiftCreditUsd,
+      cumulativeRechargeUsd,
       trafficMarkupPercent,
     },
   });
@@ -2949,6 +3122,7 @@ export async function updateCustomer(
     renewalDay?: number | null;
     monthlyGiftCreditUsd?: number | null;
     cumulativeGiftCreditUsd?: number | null;
+    cumulativeRechargeUsd?: number | null;
     trafficMarkupPercent?: number | null;
     notes?: string;
   },
@@ -2965,6 +3139,7 @@ export async function updateCustomer(
   const renewalDay = normalizeRenewalDay(input.renewalDay);
   const monthlyGiftCreditUsd = normalizeGiftCreditUsd(input.monthlyGiftCreditUsd);
   const cumulativeGiftCreditUsd = normalizeGiftCreditUsd(input.cumulativeGiftCreditUsd);
+  const cumulativeRechargeUsd = normalizeRechargeUsd(input.cumulativeRechargeUsd);
   const trafficMarkupPercent = isSuperAdmin(input.adminSession)
     ? normalizeTrafficMarkupPercent(input.trafficMarkupPercent)
     : normalizeTrafficMarkupPercent(existingCustomer.trafficMarkupPercent);
@@ -2983,6 +3158,7 @@ export async function updateCustomer(
       renewalDay,
       monthlyGiftCreditUsd,
       cumulativeGiftCreditUsd,
+      cumulativeRechargeUsd,
       trafficMarkupPercent,
     },
   });

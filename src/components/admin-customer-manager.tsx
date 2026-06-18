@@ -19,6 +19,7 @@ type FormState = {
   renewalDay: string;
   monthlyGiftCreditUsd: string;
   cumulativeGiftCreditUsd: string;
+  cumulativeRechargeUsd: string;
   trafficMarkupPercent: string;
   notes: string;
 };
@@ -33,6 +34,7 @@ function buildForm(customer: ManagedCustomerRecord): FormState {
     renewalDay: customer.renewalDay ? String(customer.renewalDay) : "",
     monthlyGiftCreditUsd: customer.monthlyGiftCreditUsd ? String(customer.monthlyGiftCreditUsd) : "",
     cumulativeGiftCreditUsd: customer.cumulativeGiftCreditUsd ? String(customer.cumulativeGiftCreditUsd) : "",
+    cumulativeRechargeUsd: customer.cumulativeRechargeUsd ? String(customer.cumulativeRechargeUsd) : "",
     trafficMarkupPercent: customer.trafficMarkupPercent ? String(customer.trafficMarkupPercent) : "",
     notes: customer.notes,
   };
@@ -225,6 +227,7 @@ export function AdminCustomerManager({
           renewalDay: parseRenewalDay(payload.renewalDay),
           monthlyGiftCreditUsd: parseGiftCreditUsd(payload.monthlyGiftCreditUsd),
           cumulativeGiftCreditUsd: parseGiftCreditUsd(payload.cumulativeGiftCreditUsd),
+          cumulativeRechargeUsd: parseGiftCreditUsd(payload.cumulativeRechargeUsd),
           ...(isSuperAdmin
             ? {
                 trafficMarkupPercent: parseTrafficMarkupPercent(payload.trafficMarkupPercent),
@@ -261,6 +264,7 @@ export function AdminCustomerManager({
       renewalDay: customer.renewalDay ? String(customer.renewalDay) : "",
       monthlyGiftCreditUsd: customer.monthlyGiftCreditUsd ? String(customer.monthlyGiftCreditUsd) : "",
       cumulativeGiftCreditUsd: customer.cumulativeGiftCreditUsd ? String(customer.cumulativeGiftCreditUsd) : "",
+      cumulativeRechargeUsd: customer.cumulativeRechargeUsd ? String(customer.cumulativeRechargeUsd) : "",
       trafficMarkupPercent: customer.trafficMarkupPercent ? String(customer.trafficMarkupPercent) : "",
       notes: customer.notes,
     });
@@ -377,6 +381,14 @@ export function AdminCustomerManager({
                     <span className="text-slate-950">
                       {customer.cumulativeGiftCreditUsd
                         ? `${customer.cumulativeGiftCreditUsd.toFixed(2)} USD`
+                        : t.customerManager.noGiftCredit}
+                    </span>
+                  </div>
+                  <div>
+                    {t.customerManager.labels.cumulativeRechargeUsd}:{" "}
+                    <span className="text-slate-950">
+                      {customer.cumulativeRechargeUsd
+                        ? `${customer.cumulativeRechargeUsd.toFixed(2)} USD`
                         : t.customerManager.noGiftCredit}
                     </span>
                   </div>
@@ -540,6 +552,16 @@ export function AdminCustomerManager({
                 value={form.cumulativeGiftCreditUsd}
                 onChange={(event) => updateField("cumulativeGiftCreditUsd", event.target.value)}
                 placeholder={t.customerManager.placeholders.cumulativeGiftCreditUsd}
+                className={inputClassName()}
+              />
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                inputMode="decimal"
+                value={form.cumulativeRechargeUsd}
+                onChange={(event) => updateField("cumulativeRechargeUsd", event.target.value)}
+                placeholder={t.customerManager.placeholders.cumulativeRechargeUsd}
                 className={inputClassName()}
               />
               {isSuperAdmin ? (

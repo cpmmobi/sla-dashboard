@@ -45,6 +45,8 @@ export async function PATCH(
     monthlyGiftCreditUsd: typeof body?.monthlyGiftCreditUsd === "number" ? body.monthlyGiftCreditUsd : null,
     cumulativeGiftCreditUsd:
       typeof body?.cumulativeGiftCreditUsd === "number" ? body.cumulativeGiftCreditUsd : null,
+    cumulativeRechargeUsd:
+      typeof body?.cumulativeRechargeUsd === "number" ? body.cumulativeRechargeUsd : null,
     trafficMarkupPercent:
       typeof body?.trafficMarkupPercent === "number"
         ? body.trafficMarkupPercent
