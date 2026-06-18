@@ -3,6 +3,7 @@ import type { AdminSession } from "@/lib/mock-backend";
 
 type AdminNavKey =
   | "trafficBoard"
+  | "customerBilling"
   | "reports"
   | "customers"
   | "announcements"
@@ -10,6 +11,7 @@ type AdminNavKey =
 
 const adminNavRoutes: Record<AdminNavKey, string> = {
   trafficBoard: "/admin/traffic-board",
+  customerBilling: "/admin/customer-billing",
   reports: "/admin/reports",
   customers: "/admin/customers",
   announcements: "/admin/announcements",

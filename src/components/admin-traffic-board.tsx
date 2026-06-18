@@ -3,9 +3,10 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
-import { DataTable, MetricCard, Panel } from "@/components/dashboard-ui";
+import { DashboardModal, DataTable, MetricCard, Panel } from "@/components/dashboard-ui";
 import type {
   TrafficBoardPeriod,
+  TrafficBoardCycleHistoryView,
   TrafficBoardRow,
   TrafficBoardShellView,
 } from "@/lib/mock-backend";
@@ -54,6 +55,10 @@ function isNewCustomerGiftPeriod(period: TrafficBoardPeriod) {
   return period === "newCustomerGift";
 }
 
+function isCycleWaiverPeriod(period: TrafficBoardPeriod) {
+  return period === "cycleWaiver";
+}
+
 function formatTrafficFromGb(valueGb: number, locale: Locale) {
   if (valueGb >= 1024) {
     return `${(valueGb / 1024).toLocaleString(locale === "en" ? "en-US" : "zh-CN", {
@@ -91,25 +96,19 @@ export function AdminTrafficBoard({
   locale,
   view,
   canViewTrafficMarkup,
+  availablePeriods,
+  tableTitle,
 }: {
   locale: Locale;
   view: TrafficBoardShellView;
   canViewTrafficMarkup: boolean;
+  availablePeriods: TrafficBoardPeriod[];
+  tableTitle?: string;
 }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const t = getTranslations(locale);
-  const periods: TrafficBoardPeriod[] = [
-    "cycle",
-    "lastCycle",
-    "newCustomerGift",
-    "today",
-    "last24",
-    "last3",
-    "last30",
-    "currentMonth",
-    "lastMonth",
-  ];
+  const periods = availablePeriods;
   const initialRows = useMemo<TrafficBoardRowState[]>(
     () =>
       view.rows.map((row) => ({
@@ -121,6 +120,10 @@ export function AdminTrafficBoard({
   );
   const [rows, setRows] = useState<TrafficBoardRowState[]>(initialRows);
   const [trafficSortDirection, setTrafficSortDirection] = useState<TrafficSortDirection>("desc");
+  const [selectedHistoryCustomer, setSelectedHistoryCustomer] = useState<TrafficBoardRowState | null>(null);
+  const [cycleHistory, setCycleHistory] = useState<TrafficBoardCycleHistoryView | null>(null);
+  const [cycleHistoryLoading, setCycleHistoryLoading] = useState(false);
+  const [cycleHistoryError, setCycleHistoryError] = useState<string | null>(null);
   const requestQueueRef = useRef<Promise<void>>(Promise.resolve());
   const requestGenerationRef = useRef(0);
 
@@ -233,8 +236,12 @@ export function AdminTrafficBoard({
                   trafficCost: null,
                   trafficCostUsd: 0,
                   trafficCostCanRetry: true,
+                  cycleOverspend: null,
+                  cycleOverspendUsd: 0,
                   remainingBalance: null,
                   remainingBalanceUsd: 0,
+                  pendingTopUp: null,
+                  pendingTopUpUsd: 0,
                   projectedMonthTraffic: null,
                   projectedTrafficCost: null,
                   trafficHint:
@@ -311,16 +318,21 @@ export function AdminTrafficBoard({
   const liveCustomerCount = rows.filter((row) => row.hasLiveData).length;
   const showGiftTrafficProjection = shouldShowGiftTrafficProjection(view.period);
   const showNewCustomerGiftView = isNewCustomerGiftPeriod(view.period);
+  const showCycleWaiverView = isCycleWaiverPeriod(view.period);
+  const totalAvailableRechargeUsd = rows.reduce((sum, row) => sum + row.availableRechargeUsd, 0);
   const totalRechargeUsd = rows.reduce((sum, row) => sum + row.cumulativeRechargeUsd, 0);
   const totalRemainingBalanceUsd = rows.reduce((sum, row) => sum + row.remainingBalanceUsd, 0);
+  const totalPendingTopUpUsd = rows.reduce((sum, row) => sum + row.pendingTopUpUsd, 0);
   const projectedTrafficLabel =
     view.period === "cycle" || view.period === "lastCycle"
       ? locale === "en"
         ? "Cycle Projection"
         : "账期预估"
       : t.trafficBoard.projectedMonthTraffic;
-  const tableColumnClassNames = showNewCustomerGiftView
-    ? ["w-[15%]", "w-[15%]", "w-[18%]", "w-[14%]", "w-[14%]", "w-[14%]", "w-[10%] text-center"]
+  const tableColumnClassNames = showCycleWaiverView
+    ? ["w-[14%]", "w-[14%]", "w-[16%]", "w-[12%]", "w-[12%]", "w-[12%]", "w-[10%]", "w-[10%] text-center"]
+    : showNewCustomerGiftView
+    ? ["w-[15%]", "w-[15%]", "w-[18%]", "w-[14%]", "w-[13%]", "w-[13%]", "w-[12%] text-center"]
     : showGiftTrafficProjection
     ? [
         "w-[15%]",
@@ -353,6 +365,15 @@ export function AdminTrafficBoard({
       }
 
       if (
+        showCycleWaiverView &&
+        left.hasLiveData &&
+        right.hasLiveData &&
+        left.pendingTopUpUsd !== right.pendingTopUpUsd
+      ) {
+        return right.pendingTopUpUsd - left.pendingTopUpUsd;
+      }
+
+      if (
         showNewCustomerGiftView &&
         left.hasLiveData &&
         right.hasLiveData &&
@@ -367,8 +388,44 @@ export function AdminTrafficBoard({
 
       return left.customerName.localeCompare(right.customerName);
     });
-  }, [rows, showNewCustomerGiftView, trafficSortDirection]);
-  const metrics = showNewCustomerGiftView
+  }, [rows, showCycleWaiverView, showNewCustomerGiftView, trafficSortDirection]);
+  const metrics = showCycleWaiverView
+    ? [
+        {
+          label: locale === "en" ? "Waiver Customers" : "获免客户",
+          value: String(view.summary.customerCount),
+          delta: locale === "en" ? "Customers with cycle waiver credit" : "仅展示设置了账期获免的客户",
+          tone: "brand" as const,
+        },
+        {
+          label: view.trafficLabel,
+          value: resolvedCount > 0 ? formatTrafficFromGb(totalTrafficGb, locale) : "--",
+          delta: locale === "en" ? "Current cycle actual traffic" : "当前账期实际流量",
+          tone: "success" as const,
+        },
+        {
+          label: t.adminTrafficBoardPage.totalTrafficCost,
+          value: resolvedCount > 0 ? formatUsdValue(totalTrafficCostUsd, locale) : "--",
+          delta: locale === "en" ? "Current cycle actual cost" : "当前账期实际金额",
+          tone: "warning" as const,
+        },
+        {
+          label: locale === "en" ? "Available Recharge" : "可用充值",
+          value: formatUsdValue(totalAvailableRechargeUsd, locale),
+          delta:
+            locale === "en"
+              ? "Manual available recharge balance"
+              : "客户管理里手工维护的可用余额",
+          tone: "brand" as const,
+        },
+        {
+          label: locale === "en" ? "Top-up Needed" : "待补金额",
+          value: resolvedCount > 0 ? formatUsdValue(totalPendingTopUpUsd, locale) : "--",
+          delta: locale === "en" ? "Current cycle amount still unpaid" : "当前账期扣除可用充值后仍需补款",
+          tone: totalPendingTopUpUsd > 0 ? ("warning" as const) : ("success" as const),
+        },
+      ]
+    : showNewCustomerGiftView
     ? [
         {
           label: locale === "en" ? "Gift Customers" : "赠送客户",
@@ -399,15 +456,15 @@ export function AdminTrafficBoard({
           value: formatUsdValue(totalRechargeUsd, locale),
           delta:
             locale === "en"
-              ? "Manual record from customer management"
-              : "客户管理里手工记录",
+              ? "Manual cumulative recharge amount"
+              : "客户管理里手工记录的累计充值金额",
           tone: "brand" as const,
         },
         {
-          label: locale === "en" ? "Remaining Balance" : "剩余金额",
+          label: locale === "en" ? "Remaining Available" : "剩余可用",
           value: resolvedCount > 0 ? formatUsdValue(totalRemainingBalanceUsd, locale) : "--",
           delta: locale === "en" ? "Gift + recharge - cost" : "充值 + 赠送 - 消耗",
-          tone: totalRemainingBalanceUsd < 0 ? ("warning" as const) : ("success" as const),
+          tone: "success" as const,
         },
       ]
     : [
@@ -464,6 +521,41 @@ export function AdminTrafficBoard({
         },
       ];
 
+  const loadCycleHistory = useCallback(
+    async (row: TrafficBoardRowState) => {
+      setSelectedHistoryCustomer(row);
+      setCycleHistory(null);
+      setCycleHistoryError(null);
+      setCycleHistoryLoading(true);
+
+      try {
+        const response = await fetch(
+          `/api/dashboard/admin/traffic-board-cycle-history?customerId=${encodeURIComponent(row.customerId)}`,
+          { cache: "no-store" },
+        );
+        const payload = await response.json();
+
+        if (!response.ok) {
+          throw new Error(typeof payload?.message === "string" ? payload.message : "TRAFFIC_BOARD_CYCLE_HISTORY_FAILED");
+        }
+
+        setCycleHistory(payload);
+      } catch {
+        setCycleHistoryError(t.trafficBoard.loadHistoryFailed);
+      } finally {
+        setCycleHistoryLoading(false);
+      }
+    },
+    [t.trafficBoard.loadHistoryFailed],
+  );
+
+  const closeCycleHistory = useCallback(() => {
+    setSelectedHistoryCustomer(null);
+    setCycleHistory(null);
+    setCycleHistoryError(null);
+    setCycleHistoryLoading(false);
+  }, []);
+
   return (
     <div className="space-y-3">
       <section className="grid gap-2.5 md:grid-cols-2 xl:grid-cols-5">
@@ -474,7 +566,7 @@ export function AdminTrafficBoard({
 
       <Panel
         compact
-        title={t.adminTrafficBoardPage.tableTitle}
+        title={tableTitle ?? t.adminTrafficBoardPage.tableTitle}
         aside={
           <div className="flex flex-col items-start gap-1.5 sm:items-end">
             <div className="flex max-w-[720px] flex-wrap gap-1.5 sm:justify-end">
@@ -527,6 +619,10 @@ export function AdminTrafficBoard({
               ...(showGiftTrafficProjection ? [projectedTrafficLabel] : []),
               ...(showGiftTrafficProjection ? [t.trafficBoard.cycleWaiverTrafficFee] : []),
               ...(showGiftTrafficProjection ? [t.trafficBoard.cycleOverspend] : []),
+              ...(showCycleWaiverView ? [t.trafficBoard.cycleWaiverTrafficFee] : []),
+              ...(showCycleWaiverView ? [t.trafficBoard.cycleOverspend] : []),
+              ...(showCycleWaiverView ? [t.trafficBoard.availableRecharge] : []),
+              ...(showCycleWaiverView ? [t.trafficBoard.pendingTopUp] : []),
               ...(showNewCustomerGiftView ? [t.trafficBoard.newCustomerGiftCredit] : []),
               ...(showNewCustomerGiftView ? [t.trafficBoard.cumulativeRecharge] : []),
               ...(showNewCustomerGiftView ? [t.trafficBoard.remainingBalance] : []),
@@ -541,7 +637,17 @@ export function AdminTrafficBoard({
               const cells = [
                 <div key={`${row.customerId}-customer`} className="min-w-0">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="font-medium text-slate-950">{row.customerName}</span>
+                    {showCycleWaiverView ? (
+                      <button
+                        type="button"
+                        onClick={() => void loadCycleHistory(row)}
+                        className="font-medium text-slate-950 transition hover:text-rose-600"
+                      >
+                        {row.customerName}
+                      </button>
+                    ) : (
+                      <span className="font-medium text-slate-950">{row.customerName}</span>
+                    )}
                     <span
                       className={`inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset ${getStatusTone(
                         row.status,
@@ -634,6 +740,59 @@ export function AdminTrafficBoard({
                 );
               }
 
+              if (showCycleWaiverView) {
+                cells.push(
+                  <span
+                    key={`${row.customerId}-cycle-waiver-history-fee`}
+                    className="block whitespace-nowrap text-sm text-slate-600"
+                  >
+                    {row.cycleWaiverTrafficFee ?? "--"}
+                  </span>,
+                );
+                cells.push(
+                  <span
+                    key={`${row.customerId}-cycle-waiver-history-overspend`}
+                    className={`block whitespace-nowrap text-sm font-medium ${
+                      row.trafficCost && row.cycleOverspendUsd > 0 ? "text-rose-600" : "text-slate-600"
+                    }`}
+                  >
+                    {row.trafficCost ? row.cycleOverspend ?? "--" : "--"}
+                  </span>,
+                );
+                cells.push(
+                  <span
+                    key={`${row.customerId}-cycle-waiver-history-recharge`}
+                    className="block whitespace-nowrap text-sm text-slate-600"
+                  >
+                    {row.availableRecharge ?? "--"}
+                  </span>,
+                );
+                cells.push(
+                  <span
+                    key={`${row.customerId}-cycle-waiver-history-pending-top-up`}
+                    className={`block whitespace-nowrap text-sm font-medium ${
+                      row.trafficCost && row.pendingTopUpUsd > 0 ? "text-rose-600" : "text-slate-600"
+                    }`}
+                  >
+                    {row.trafficCost ? row.pendingTopUp ?? "--" : "--"}
+                  </span>,
+                );
+              }
+
+              if (showCycleWaiverView) {
+                cells.push(
+                  <button
+                    key={`${row.customerId}-cycle-history-action`}
+                    type="button"
+                    onClick={() => void loadCycleHistory(row)}
+                    className="inline-flex whitespace-nowrap rounded-full border border-slate-200 px-2 py-1 text-[11px] font-medium leading-none text-slate-700 transition hover:border-rose-200 hover:bg-rose-50 hover:text-slate-950"
+                  >
+                    {t.trafficBoard.cycleHistory}
+                  </button>,
+                );
+                return cells;
+              }
+
               if (showNewCustomerGiftView) {
                 cells.push(
                   <span key={`${row.customerId}-new-customer-gift`} className="block whitespace-nowrap text-sm text-slate-600">
@@ -648,9 +807,7 @@ export function AdminTrafficBoard({
                 cells.push(
                   <span
                     key={`${row.customerId}-remaining-balance`}
-                    className={`block whitespace-nowrap text-sm font-medium ${
-                      row.remainingBalance !== null && row.remainingBalanceUsd < 0 ? "text-rose-600" : "text-slate-600"
-                    }`}
+                    className="block whitespace-nowrap text-sm font-medium text-slate-600"
                   >
                     {row.remainingBalance ?? "--"}
                   </span>,
@@ -672,6 +829,89 @@ export function AdminTrafficBoard({
           />
         )}
       </Panel>
+      <DashboardModal open={selectedHistoryCustomer !== null} onClose={closeCycleHistory} maxWidthClassName="max-w-5xl">
+        <div className="space-y-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.3em] text-slate-500">{t.trafficBoard.cycleHistory}</p>
+              <h3 className="mt-2 text-xl font-semibold tracking-[0.01em] text-slate-950">
+                {cycleHistory?.customerName ?? selectedHistoryCustomer?.customerName ?? t.trafficBoard.historyTitle}
+              </h3>
+              <p className="mt-2 text-sm text-slate-500">{t.trafficBoard.historyDescription}</p>
+            </div>
+            <button
+              type="button"
+              onClick={closeCycleHistory}
+              className="inline-flex rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-slate-950"
+            >
+              {t.trafficBoard.closeHistory}
+            </button>
+          </div>
+
+          {cycleHistoryLoading ? (
+            <div className="rounded-[24px] border border-dashed border-slate-200 bg-slate-50 px-5 py-8 text-center text-sm text-slate-500">
+              {t.trafficBoard.loadingHistory}
+            </div>
+          ) : cycleHistoryError ? (
+            <div className="rounded-[24px] border border-dashed border-rose-200 bg-rose-50 px-5 py-8 text-center">
+              <p className="text-sm text-rose-700">{cycleHistoryError}</p>
+              {selectedHistoryCustomer ? (
+                <button
+                  type="button"
+                  onClick={() => void loadCycleHistory(selectedHistoryCustomer)}
+                  className="mt-3 inline-flex rounded-full border border-rose-200 bg-white px-3 py-1.5 text-xs font-medium text-rose-700 transition hover:bg-rose-100"
+                >
+                  {t.trafficBoard.retryHistory}
+                </button>
+              ) : null}
+            </div>
+          ) : cycleHistory ? (
+            <DataTable
+              compact
+              fitToContainer
+              columnClassNames={["w-[22%]", "w-[18%]", "w-[18%]", "w-[16%]", "w-[14%]", "w-[12%] text-center"]}
+              headers={[
+                t.trafficBoard.cycleRange,
+                t.trafficBoard.cumulativeTraffic,
+                t.trafficBoard.cycleTrafficCost,
+                t.trafficBoard.cycleWaiverTrafficFee,
+                t.trafficBoard.cycleOverspend,
+                t.trafficBoard.action,
+              ]}
+              rows={cycleHistory.entries.map((entry) => [
+                <span key={`${entry.cycleRange}-range`} className="block text-sm text-slate-700">
+                  {entry.cycleRange}
+                </span>,
+                <div key={`${entry.cycleRange}-traffic`} className="min-w-0">
+                  <span className="block text-sm font-medium text-slate-950">{entry.traffic}</span>
+                  {entry.trafficHint ? <p className="mt-0.5 text-xs text-slate-500">{entry.trafficHint}</p> : null}
+                </div>,
+                <span key={`${entry.cycleRange}-cost`} className="block whitespace-nowrap text-sm text-slate-600">
+                  {entry.trafficCost ?? "--"}
+                </span>,
+                <span key={`${entry.cycleRange}-waiver`} className="block whitespace-nowrap text-sm text-slate-600">
+                  {entry.cycleWaiverTrafficFee ?? "--"}
+                </span>,
+                <span
+                  key={`${entry.cycleRange}-overspend`}
+                  className={`block whitespace-nowrap text-sm font-medium ${
+                    entry.cycleOverspendUsd > 0 ? "text-rose-600" : "text-slate-600"
+                  }`}
+                >
+                  {entry.hasLiveData ? entry.cycleOverspend : "--"}
+                </span>,
+                <Link
+                  key={`${entry.cycleRange}-report`}
+                  href={entry.reportHref}
+                  className="inline-flex whitespace-nowrap rounded-full border border-slate-200 px-2 py-1 text-[11px] font-medium leading-none text-slate-700 transition hover:border-rose-200 hover:bg-rose-50 hover:text-slate-950"
+                >
+                  {t.trafficBoard.openReport}
+                </Link>,
+              ])}
+            />
+          ) : null}
+        </div>
+      </DashboardModal>
     </div>
   );
 }

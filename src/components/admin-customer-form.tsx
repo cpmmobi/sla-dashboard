@@ -14,6 +14,7 @@ type FormState = {
   renewalDay: string;
   monthlyGiftCreditUsd: string;
   cumulativeGiftCreditUsd: string;
+  availableRechargeUsd: string;
   cumulativeRechargeUsd: string;
   trafficMarkupPercent: string;
   notes: string;
@@ -29,6 +30,7 @@ function buildInitialState(currentAdmin: AdminSession): FormState {
     renewalDay: "",
     monthlyGiftCreditUsd: "",
     cumulativeGiftCreditUsd: "",
+    availableRechargeUsd: "",
     cumulativeRechargeUsd: "",
     trafficMarkupPercent: "",
     notes: "",
@@ -116,6 +118,7 @@ export function AdminCustomerForm({
           renewalDay: parseRenewalDay(form.renewalDay),
           monthlyGiftCreditUsd: parseGiftCreditUsd(form.monthlyGiftCreditUsd),
           cumulativeGiftCreditUsd: parseGiftCreditUsd(form.cumulativeGiftCreditUsd),
+          availableRechargeUsd: parseGiftCreditUsd(form.availableRechargeUsd),
           cumulativeRechargeUsd: parseGiftCreditUsd(form.cumulativeRechargeUsd),
           ...(isAccountManager
             ? {}
@@ -228,6 +231,18 @@ export function AdminCustomerForm({
             value={form.cumulativeGiftCreditUsd}
             onChange={(event) => updateField("cumulativeGiftCreditUsd", event.target.value)}
             placeholder={t.customerForm.placeholders.cumulativeGiftCreditUsd}
+            className={inputClassName()}
+          />
+        </Field>
+        <Field label={t.customerForm.labels.availableRechargeUsd}>
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            inputMode="decimal"
+            value={form.availableRechargeUsd}
+            onChange={(event) => updateField("availableRechargeUsd", event.target.value)}
+            placeholder={t.customerForm.placeholders.availableRechargeUsd}
             className={inputClassName()}
           />
         </Field>

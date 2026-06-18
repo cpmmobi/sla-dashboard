@@ -37,6 +37,7 @@ model Customer {
   renewalDay          Int?
   monthlyGiftCreditUsd Float?
   cumulativeGiftCreditUsd Float?
+  availableRechargeUsd Float?
   cumulativeRechargeUsd Float?
   trafficMarkupPercent  Float?
   createdAt           DateTime @default(now())

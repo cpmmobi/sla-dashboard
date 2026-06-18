@@ -6,31 +6,13 @@ import { getTranslations } from "@/lib/i18n";
 import { getCurrentLocale } from "@/lib/locale";
 import { getTrafficBoardShellView, type TrafficBoardPeriod } from "@/lib/mock-backend";
 
-const trafficBoardPeriods: TrafficBoardPeriod[] = [
-  "cycle",
-  "lastCycle",
-  "today",
-  "last24",
-  "last3",
-  "last30",
-  "currentMonth",
-  "lastMonth",
-] as const;
+const customerBillingPeriods: TrafficBoardPeriod[] = ["cycleWaiver", "newCustomerGift"] as const;
 
-function parseTrafficBoardPeriod(value: string | string[] | undefined): TrafficBoardPeriod {
-  return value === "cycle" ||
-    value === "lastCycle" ||
-    value === "today" ||
-    value === "last24" ||
-    value === "last3" ||
-    value === "last30" ||
-    value === "currentMonth" ||
-    value === "lastMonth"
-    ? value
-    : "today";
+function parseCustomerBillingPeriod(value: string | string[] | undefined): TrafficBoardPeriod {
+  return value === "cycleWaiver" || value === "newCustomerGift" ? value : "cycleWaiver";
 }
 
-export default async function AdminTrafficBoardPage({
+export default async function AdminCustomerBillingPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
@@ -39,9 +21,9 @@ export default async function AdminTrafficBoardPage({
   const params = await searchParams;
   const locale = await getCurrentLocale();
   const t = getTranslations(locale);
-  const period = parseTrafficBoardPeriod(params.period);
+  const period = parseCustomerBillingPeriod(params.period);
   const view = await getTrafficBoardShellView(locale, adminSession, period);
-  const nav = buildAdminNav(locale, adminSession, "trafficBoard");
+  const nav = buildAdminNav(locale, adminSession, "customerBilling");
 
   return (
     <DashboardShell
@@ -56,7 +38,8 @@ export default async function AdminTrafficBoardPage({
         locale={locale}
         view={view}
         canViewTrafficMarkup={adminSession.role === "super_admin"}
-        availablePeriods={trafficBoardPeriods}
+        availablePeriods={customerBillingPeriods}
+        tableTitle={t.adminCustomerBillingPage.tableTitle}
       />
     </DashboardShell>
   );

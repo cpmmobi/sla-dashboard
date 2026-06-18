@@ -42,6 +42,7 @@ export type CustomerRecord = {
   renewalDay: number | null;
   monthlyGiftCreditUsd: number | null;
   cumulativeGiftCreditUsd: number | null;
+  availableRechargeUsd: number | null;
   cumulativeRechargeUsd: number | null;
   trafficMarkupPercent: number | null;
 };
@@ -188,6 +189,7 @@ export type SettlementCustomerDetailView = {
 export type TrafficBoardPeriod =
   | "cycle"
   | "lastCycle"
+  | "cycleWaiver"
   | "newCustomerGift"
   | "today"
   | "last24"
@@ -216,10 +218,14 @@ export type TrafficBoardRow = {
   cycleOverspendUsd: number;
   newCustomerGiftCredit: string | null;
   newCustomerGiftCreditUsd: number;
+  availableRecharge: string | null;
+  availableRechargeUsd: number;
   cumulativeRecharge: string | null;
   cumulativeRechargeUsd: number;
   remainingBalance: string | null;
   remainingBalanceUsd: number;
+  pendingTopUp: string | null;
+  pendingTopUpUsd: number;
   trafficHint: string | null;
   canRetry: boolean;
   trafficMarkupPercent: number | null;
@@ -250,6 +256,30 @@ export type TrafficBoardView = {
   period: TrafficBoardPeriod;
   trafficLabel: string;
   trafficCostLabel: string;
+};
+
+export type TrafficBoardCycleHistoryEntry = {
+  cycleRange: string;
+  traffic: string;
+  trafficGb: number;
+  trafficCost: string | null;
+  trafficCostUsd: number;
+  cycleWaiverTrafficFee: string | null;
+  cycleWaiverTrafficFeeUsd: number;
+  cycleOverspend: string;
+  cycleOverspendUsd: number;
+  reportHref: string;
+  hasLiveData: boolean;
+  trafficHint: string | null;
+};
+
+export type TrafficBoardCycleHistoryView = {
+  customerId: string;
+  customerName: string;
+  renewalDayDisplay: string;
+  trafficMarkupPercent: number | null;
+  generatedAt: string;
+  entries: TrafficBoardCycleHistoryEntry[];
 };
 
 export type ClientDashboard = {
@@ -477,6 +507,7 @@ function toCustomerRecord(customer: {
   renewalDay: number | null;
   monthlyGiftCreditUsd?: number | null;
   cumulativeGiftCreditUsd?: number | null;
+  availableRechargeUsd?: number | null;
   cumulativeRechargeUsd?: number | null;
   monthlyGiftTrafficGb?: number | null;
   trafficMarkupPercent: number | null;
@@ -495,6 +526,8 @@ function toCustomerRecord(customer: {
     renewalDay: normalizeRenewalDay(customer.renewalDay),
     monthlyGiftCreditUsd: normalizeGiftCreditUsd(customer.monthlyGiftCreditUsd),
     cumulativeGiftCreditUsd: normalizeGiftCreditUsd(customer.cumulativeGiftCreditUsd),
+    availableRechargeUsd:
+      normalizeRechargeUsd(customer.availableRechargeUsd) ?? normalizeRechargeUsd(customer.cumulativeRechargeUsd),
     cumulativeRechargeUsd: normalizeRechargeUsd(customer.cumulativeRechargeUsd),
     trafficMarkupPercent: normalizeTrafficMarkupPercent(customer.trafficMarkupPercent),
   };
@@ -514,6 +547,7 @@ const customerCoreSelect = {
   renewalDay: true,
   monthlyGiftCreditUsd: true,
   cumulativeGiftCreditUsd: true,
+  availableRechargeUsd: true,
   cumulativeRechargeUsd: true,
   trafficMarkupPercent: true,
 } as const;
@@ -889,12 +923,32 @@ function shouldShowGiftTrafficProjection(period: TrafficBoardPeriod) {
   return period === "cycle" || period === "lastCycle";
 }
 
+function isCycleWaiverTrafficPeriod(period: TrafficBoardPeriod) {
+  return period === "cycleWaiver";
+}
+
 function isNewCustomerGiftTrafficPeriod(period: TrafficBoardPeriod) {
   return period === "newCustomerGift";
 }
 
+function shouldIncludeCustomerInTrafficBoardPeriod(customer: CustomerRecord, period: TrafficBoardPeriod) {
+  if (isNewCustomerGiftTrafficPeriod(period)) {
+    return (customer.cumulativeGiftCreditUsd ?? 0) > 0;
+  }
+
+  if (isCycleWaiverTrafficPeriod(period)) {
+    return (customer.monthlyGiftCreditUsd ?? 0) > 0;
+  }
+
+  return true;
+}
+
 function buildTrafficBoardFilters(period: TrafficBoardPeriod, renewalDay: number | null, locale: Locale, now: Date) {
   if (period === "cycle") {
+    return getCurrentBillingCycleMeta(renewalDay, locale, now);
+  }
+
+  if (period === "cycleWaiver") {
     return getCurrentBillingCycleMeta(renewalDay, locale, now);
   }
 
@@ -1097,6 +1151,10 @@ function buildTrafficBoardReportHref(
 
 function getTrafficMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
   if (locale === "en") {
+    if (period === "cycleWaiver") {
+      return "Current Cycle Traffic";
+    }
+
     if (period === "newCustomerGift") {
       return "Gift Consumption Traffic";
     }
@@ -1136,6 +1194,10 @@ function getTrafficMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
     return "今日流量";
   }
 
+  if (period === "cycleWaiver") {
+    return "当前账期流量";
+  }
+
   if (period === "newCustomerGift") {
     return "赠送消耗流量";
   }
@@ -1169,6 +1231,10 @@ function getTrafficMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
 
 function getTrafficCostMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
   if (locale === "en") {
+    if (period === "cycleWaiver") {
+      return "Current Cycle Cost";
+    }
+
     if (period === "newCustomerGift") {
       return "Gift Consumption Cost";
     }
@@ -1206,6 +1272,10 @@ function getTrafficCostMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
 
   if (period === "today") {
     return "今日流量费用";
+  }
+
+  if (period === "cycleWaiver") {
+    return "当前账期金额";
   }
 
   if (period === "newCustomerGift") {
@@ -1298,6 +1368,10 @@ function getTrafficBoardHint(
 
 function getTrafficBoardCycleHint(locale: Locale, period: TrafficBoardPeriod) {
   if (locale === "en") {
+    if (period === "cycleWaiver") {
+      return `Shows customers with cycle waiver only. The table displays current-cycle actual data, and clicking a customer opens cycle history since ${CLIENT_REPORT_MIN_DATE}.`;
+    }
+
     if (period === "newCustomerGift") {
       return `Shows only customers with new-customer gift credit, from ${CLIENT_REPORT_MIN_DATE} until now in Asia/Shanghai.`;
     }
@@ -1335,6 +1409,10 @@ function getTrafficBoardCycleHint(locale: Locale, period: TrafficBoardPeriod) {
 
   if (period === "cycle") {
     return "账期流量会从每个客户续费日前一天开始累计到当前，按北京时间统计。";
+  }
+
+  if (period === "cycleWaiver") {
+    return `当前仅展示设置了账期获免的客户，主表显示当前账期实际数据，点击客户可查看 ${CLIENT_REPORT_MIN_DATE} 起的历史账期明细。`;
   }
 
   if (period === "newCustomerGift") {
@@ -1378,10 +1456,47 @@ function buildTrafficBoardMetrics(
   const totalTrafficGb = rows.reduce((sum, row) => sum + row.trafficGb, 0);
   const liveCustomerCount = rows.filter((row) => row.hasLiveData).length;
   const totalTrafficCostUsd = rows.reduce((sum, row) => sum + row.trafficCostUsd, 0);
+  const totalAvailableRechargeUsd = rows.reduce((sum, row) => sum + row.availableRechargeUsd, 0);
   const totalRechargeUsd = rows.reduce((sum, row) => sum + row.cumulativeRechargeUsd, 0);
   const totalRemainingBalanceUsd = rows.reduce((sum, row) => sum + row.remainingBalanceUsd, 0);
+  const totalPendingTopUpUsd = rows.reduce((sum, row) => sum + row.pendingTopUpUsd, 0);
 
   if (locale === "en") {
+    if (period === "cycleWaiver") {
+      return [
+        {
+          label: "Waiver Customers",
+          value: String(customerCount),
+          delta: "Customers with cycle waiver credit",
+          tone: "brand",
+        },
+        {
+          label: getTrafficMetricLabel(locale, period),
+          value: formatTrafficFromGb(totalTrafficGb, locale),
+          delta: "Current cycle actual traffic",
+          tone: "success",
+        },
+        {
+          label: getTrafficCostMetricLabel(locale, period),
+          value: formatUsd(totalTrafficCostUsd, locale),
+          delta: "Current cycle actual cost",
+          tone: "warning",
+        },
+        {
+          label: "Available Recharge",
+          value: formatUsd(totalAvailableRechargeUsd, locale),
+          delta: "Manual available recharge balance",
+          tone: "brand",
+        },
+        {
+          label: "Top-up Needed",
+          value: formatUsd(totalPendingTopUpUsd, locale),
+          delta: "Current cycle amount still unpaid",
+          tone: totalPendingTopUpUsd > 0 ? "warning" : "success",
+        },
+      ];
+    }
+
     if (period === "newCustomerGift") {
       return [
         {
@@ -1405,14 +1520,14 @@ function buildTrafficBoardMetrics(
         {
           label: "Cumulative Recharge",
           value: formatUsd(totalRechargeUsd, locale),
-          delta: "Manual record from customer management",
+          delta: "Manual cumulative recharge amount",
           tone: "brand",
         },
         {
-          label: "Remaining Balance",
+          label: "Remaining Available",
           value: formatUsd(totalRemainingBalanceUsd, locale),
           delta: "Gift + recharge - cost",
-          tone: totalRemainingBalanceUsd < 0 ? "warning" : "success",
+          tone: "success",
         },
       ];
     }
@@ -1460,6 +1575,41 @@ function buildTrafficBoardMetrics(
     ];
   }
 
+  if (period === "cycleWaiver") {
+    return [
+      {
+        label: "获免客户",
+        value: String(customerCount),
+        delta: "仅展示设置了账期获免的客户",
+        tone: "brand",
+      },
+      {
+        label: getTrafficMetricLabel(locale, period),
+        value: formatTrafficFromGb(totalTrafficGb, locale),
+        delta: "当前账期实际流量",
+        tone: "success",
+      },
+      {
+        label: getTrafficCostMetricLabel(locale, period),
+        value: formatUsd(totalTrafficCostUsd, locale),
+        delta: "当前账期实际金额",
+        tone: "warning",
+      },
+      {
+        label: "可用充值",
+        value: formatUsd(totalAvailableRechargeUsd, locale),
+        delta: "客户管理里手工维护的可用余额",
+        tone: "brand",
+      },
+      {
+        label: "待补金额",
+        value: formatUsd(totalPendingTopUpUsd, locale),
+        delta: "当前账期仍需补的金额",
+        tone: totalPendingTopUpUsd > 0 ? "warning" : "success",
+      },
+    ];
+  }
+
   if (period === "newCustomerGift") {
     return [
       {
@@ -1483,14 +1633,14 @@ function buildTrafficBoardMetrics(
       {
         label: "累计充值",
         value: formatUsd(totalRechargeUsd, locale),
-        delta: "客户管理里手工记录",
+        delta: "客户管理里手工记录的累计充值金额",
         tone: "brand",
       },
       {
-        label: "剩余金额",
+        label: "剩余可用",
         value: formatUsd(totalRemainingBalanceUsd, locale),
         delta: "充值 + 赠送 - 消耗",
-        tone: totalRemainingBalanceUsd < 0 ? "warning" : "success",
+        tone: "success",
       },
     ];
   }
@@ -2522,12 +2672,16 @@ function buildTrafficBoardBaseRow(
       ? formatUsd(customer.cumulativeGiftCreditUsd, locale)
       : null,
     newCustomerGiftCreditUsd: customer.cumulativeGiftCreditUsd ?? 0,
+    availableRecharge: customer.availableRechargeUsd ? formatUsd(customer.availableRechargeUsd, locale) : null,
+    availableRechargeUsd: customer.availableRechargeUsd ?? customer.cumulativeRechargeUsd ?? 0,
     cumulativeRecharge: customer.cumulativeRechargeUsd
       ? formatUsd(customer.cumulativeRechargeUsd, locale)
       : null,
     cumulativeRechargeUsd: customer.cumulativeRechargeUsd ?? 0,
     remainingBalance: null,
     remainingBalanceUsd: 0,
+    pendingTopUp: null,
+    pendingTopUpUsd: 0,
     trafficHint:
       customer.status !== "正常"
         ? getTrafficBoardHint(locale, "inactive")
@@ -2548,6 +2702,113 @@ function buildTrafficBoardBaseRow(
     windowTotalDays: trafficWindow.windowTotalDays,
     shouldFetchLiveData,
   };
+}
+
+async function buildTrafficBoardLiveSnapshot(
+  customer: CustomerRecord,
+  locale: Locale,
+  filters: ReportFilters,
+) {
+  const summaryResult = isHardcodedMrsukanCutoverCustomer(customer)
+    ? await buildHardcodedMrsukanRegionalTrafficSummary(customer, filters, locale)
+    : await buildAllDomainsRegionalTrafficSummary(customer.domains, filters, locale);
+  const hasLiveData = summaryResult.matchedDomainCount > 0;
+  const trafficGb = hasLiveData
+    ? applyTrafficMarkupToGb(summaryResult.totalTrafficGb, customer.trafficMarkupPercent)
+    : 0;
+  let trafficCost: string | null = null;
+  let trafficCostUsd = 0;
+  let trafficCostCanRetry = false;
+  const trafficHint = hasLiveData
+    ? summaryResult.matchedDomainCount < customer.domains.length
+      ? getTrafficBoardHint(
+          locale,
+          "partial_domains",
+          summaryResult.matchedDomainCount,
+          customer.domains.length,
+        )
+      : null
+    : getTrafficBoardHint(locale, summaryResult.failureReason ?? "request_failed");
+  const canRetry = hasLiveData
+    ? summaryResult.matchedDomainCount < customer.domains.length
+    : summaryResult.failureReason === "request_failed" || summaryResult.failureReason === "domain_not_found";
+
+  if (hasLiveData) {
+    trafficCostUsd = applyTrafficMarkupToUsd(summaryResult.totalCostUsd, customer.trafficMarkupPercent);
+    trafficCost = formatUsd(trafficCostUsd, locale);
+  }
+
+  if (canRetry) {
+    trafficCostCanRetry = true;
+  }
+
+  return {
+    summaryResult,
+    hasLiveData,
+    trafficGb,
+    trafficCost,
+    trafficCostUsd,
+    trafficCostCanRetry,
+    trafficHint,
+    canRetry,
+  };
+}
+
+function buildCycleWaiverHistoryWindows(renewalDay: number | null, locale: Locale, now: Date, offsetMinutes = 8 * 60) {
+  const [startYear, startMonth, startDay] = CLIENT_REPORT_MIN_DATE.split("-").map(Number);
+  const historyStartUtc = Date.UTC(startYear, startMonth - 1, startDay, 0, 0, 0, 0) - offsetMinutes * 60 * 1000;
+  const windows: Array<{ cycleRange: string; filters: ReportFilters }> = [];
+  let cursor = new Date(now);
+
+  while (cursor.getTime() >= historyStartUtc) {
+    const cycleMeta = getCurrentBillingCycleMeta(renewalDay, locale, cursor, offsetMinutes);
+    const effectiveStartUtc = Math.max(cycleMeta.cycleStartUtc, historyStartUtc);
+
+    if (cursor.getTime() < effectiveStartUtc) {
+      break;
+    }
+
+    const effectiveStartParts = getDatePartsAtOffset(new Date(effectiveStartUtc), offsetMinutes);
+    const effectiveEndParts = getDatePartsAtOffset(cursor, offsetMinutes);
+
+    windows.push({
+      cycleRange: `${formatBillingRangeDate(effectiveStartParts.month, effectiveStartParts.day, locale)} - ${formatBillingRangeDate(
+        effectiveEndParts.month,
+        effectiveEndParts.day,
+        locale,
+      )}`,
+      filters: {
+        queryType: "traffic",
+        timeRange: "custom",
+        area: "all",
+        from: formatLocalDateTime(
+          effectiveStartParts.year,
+          effectiveStartParts.month,
+          effectiveStartParts.day,
+          effectiveStartParts.hour,
+          effectiveStartParts.minute,
+        ),
+        to: formatLocalDateTime(
+          effectiveEndParts.year,
+          effectiveEndParts.month,
+          effectiveEndParts.day,
+          effectiveEndParts.hour,
+          effectiveEndParts.minute,
+        ),
+        timeZone: "Asia/Shanghai",
+        timeZoneOffsetMinutes: offsetMinutes,
+        locations: [],
+      },
+    });
+
+    const previousCursorMs = cycleMeta.cycleStartUtc - 60 * 1000;
+    if (previousCursorMs < historyStartUtc) {
+      break;
+    }
+    cursor = new Date(previousCursorMs);
+  }
+
+  return windows;
 }
 
 function sanitizeTrafficBoardRowForAdmin(row: TrafficBoardRow, adminSession: AdminSession) {
@@ -2598,40 +2859,16 @@ async function buildTrafficBoardRow(
     };
   }
 
-  const summaryResult = isHardcodedMrsukanCutoverCustomer(customer)
-    ? await buildHardcodedMrsukanRegionalTrafficSummary(customer, base.filters, locale)
-    : await buildAllDomainsRegionalTrafficSummary(customer.domains, base.filters, locale);
-  const hasLiveData = summaryResult.matchedDomainCount > 0;
-  const trafficGb = hasLiveData
-    ? applyTrafficMarkupToGb(summaryResult.totalTrafficGb, customer.trafficMarkupPercent)
-    : 0;
-  let trafficCost: string | null = null;
-  let trafficCostUsd = 0;
-  let trafficCostCanRetry = false;
-  const trafficHint = hasLiveData
-    ? summaryResult.matchedDomainCount < customer.domains.length
-      ? getTrafficBoardHint(
-          locale,
-          "partial_domains",
-          summaryResult.matchedDomainCount,
-          customer.domains.length,
-        )
-      : null
-    : getTrafficBoardHint(locale, summaryResult.failureReason ?? "request_failed");
-  const canRetry = hasLiveData
-    ? summaryResult.matchedDomainCount < customer.domains.length
-    : summaryResult.failureReason === "request_failed" ||
-        summaryResult.failureReason === "domain_not_found";
-  if (hasLiveData) {
-    trafficCostUsd = applyTrafficMarkupToUsd(
-      summaryResult.totalCostUsd,
-      customer.trafficMarkupPercent,
-    );
-    trafficCost = formatUsd(trafficCostUsd, locale);
-  }
-  if (canRetry) {
-    trafficCostCanRetry = true;
-  }
+  const {
+    summaryResult,
+    hasLiveData,
+    trafficGb,
+    trafficCost,
+    trafficCostUsd,
+    trafficCostCanRetry,
+    trafficHint,
+    canRetry,
+  } = await buildTrafficBoardLiveSnapshot(customer, locale, base.filters);
   const selectedTrafficAvailable =
     shouldShowGiftTrafficProjection(period) &&
     (summaryResult.matchedDomainCount > 0 || summaryResult.failureReason === "empty");
@@ -2651,9 +2888,13 @@ async function buildTrafficBoardRow(
   const cycleOverspendUsd = Math.max(trafficCostUsd - cycleWaiverTrafficFeeUsd, 0);
   const cycleOverspend = formatUsd(cycleOverspendUsd, locale);
   const newCustomerGiftCreditUsd = normalizeGiftCreditUsd(customer.cumulativeGiftCreditUsd) ?? 0;
+  const availableRechargeUsd =
+    normalizeRechargeUsd(customer.availableRechargeUsd) ?? normalizeRechargeUsd(customer.cumulativeRechargeUsd) ?? 0;
   const cumulativeRechargeUsd = normalizeRechargeUsd(customer.cumulativeRechargeUsd) ?? 0;
-  const remainingBalanceUsd = Number((newCustomerGiftCreditUsd + cumulativeRechargeUsd - trafficCostUsd).toFixed(2));
+  const remainingBalanceUsd = Number(Math.max(newCustomerGiftCreditUsd + cumulativeRechargeUsd - trafficCostUsd, 0).toFixed(2));
   const remainingBalance = formatUsd(remainingBalanceUsd, locale);
+  const pendingTopUpUsd = Number(Math.max(cycleOverspendUsd - availableRechargeUsd, 0).toFixed(2));
+  const pendingTopUp = formatUsd(pendingTopUpUsd, locale);
 
   if (shouldShowGiftTrafficProjection(period) && selectedTrafficAvailable && currentWindowHours) {
     if (remainingWindowHours <= 0) {
@@ -2729,18 +2970,112 @@ async function buildTrafficBoardRow(
         ? formatUsd(customer.cumulativeGiftCreditUsd, locale)
         : null,
       newCustomerGiftCreditUsd,
+      availableRecharge: customer.availableRechargeUsd
+        ? formatUsd(customer.availableRechargeUsd, locale)
+        : customer.cumulativeRechargeUsd
+          ? formatUsd(customer.cumulativeRechargeUsd, locale)
+          : null,
+      availableRechargeUsd,
       cumulativeRecharge: customer.cumulativeRechargeUsd
         ? formatUsd(customer.cumulativeRechargeUsd, locale)
         : null,
       cumulativeRechargeUsd,
       remainingBalance: hasLiveData ? remainingBalance : null,
       remainingBalanceUsd: hasLiveData ? remainingBalanceUsd : 0,
+      pendingTopUp: hasLiveData ? pendingTopUp : null,
+      pendingTopUpUsd: hasLiveData ? pendingTopUpUsd : 0,
       trafficHint,
       canRetry,
       projectedMonthTraffic: projectedPeriodTrafficGb ? formatTrafficFromGb(projectedPeriodTrafficGb, locale) : null,
       projectedTrafficCost,
     },
     daysUntilRenewal: base.daysUntilRenewal,
+  };
+}
+
+export async function getTrafficBoardCycleHistory(
+  locale: Locale,
+  adminSession: AdminSession,
+  customerId: string,
+  now = new Date(),
+): Promise<TrafficBoardCycleHistoryView | null> {
+  const customerRecord = await getCustomerForAdmin(customerId, adminSession);
+
+  if (!customerRecord) {
+    return null;
+  }
+
+  const customer = toCustomerRecord(customerRecord);
+  if ((customer.monthlyGiftCreditUsd ?? 0) <= 0) {
+    return {
+      customerId: customer.id,
+      customerName: customer.name,
+      renewalDayDisplay: formatRenewalDayDisplay(customer.renewalDay, locale),
+      trafficMarkupPercent: isSuperAdmin(adminSession) ? customer.trafficMarkupPercent : null,
+      generatedAt: formatLocalDateTime(
+        ...(() => {
+          const parts = getDatePartsAtOffset(now, 8 * 60);
+          return [parts.year, parts.month, parts.day, parts.hour, parts.minute] as const;
+        })(),
+      ),
+      entries: [],
+    };
+  }
+
+  const cycleWaiverTrafficFeeUsd = normalizeGiftCreditUsd(customer.monthlyGiftCreditUsd) ?? 0;
+  const windows = buildCycleWaiverHistoryWindows(customer.renewalDay, locale, now);
+  const entries: TrafficBoardCycleHistoryEntry[] = [];
+
+  for (const window of windows) {
+    const snapshot =
+      customer.status === "正常" && customer.domains.length > 0
+        ? await buildTrafficBoardLiveSnapshot(customer, locale, window.filters)
+        : {
+            summaryResult: {
+              matchedDomainCount: 0,
+              failureReason: customer.status !== "正常" ? "request_failed" : "domain_not_found",
+            },
+            hasLiveData: false,
+            trafficGb: 0,
+            trafficCost: null,
+            trafficCostUsd: 0,
+            trafficCostCanRetry: false,
+            trafficHint:
+              customer.status !== "正常"
+                ? getTrafficBoardHint(locale, "inactive")
+                : getTrafficBoardHint(locale, "no_domains"),
+            canRetry: false,
+          };
+    const cycleOverspendUsd = Math.max(snapshot.trafficCostUsd - cycleWaiverTrafficFeeUsd, 0);
+
+    entries.push({
+      cycleRange: window.cycleRange,
+      traffic: snapshot.hasLiveData ? formatTrafficFromGb(snapshot.trafficGb, locale) : "--",
+      trafficGb: snapshot.trafficGb,
+      trafficCost: snapshot.trafficCost,
+      trafficCostUsd: snapshot.trafficCostUsd,
+      cycleWaiverTrafficFee: cycleWaiverTrafficFeeUsd > 0 ? formatUsd(cycleWaiverTrafficFeeUsd, locale) : null,
+      cycleWaiverTrafficFeeUsd,
+      cycleOverspend: formatUsd(cycleOverspendUsd, locale),
+      cycleOverspendUsd,
+      reportHref: buildTrafficBoardReportHref(customer, "cycleWaiver", window.filters),
+      hasLiveData: snapshot.hasLiveData,
+      trafficHint: snapshot.trafficHint,
+    });
+  }
+
+  return {
+    customerId: customer.id,
+    customerName: customer.name,
+    renewalDayDisplay: formatRenewalDayDisplay(customer.renewalDay, locale),
+    trafficMarkupPercent: isSuperAdmin(adminSession) ? customer.trafficMarkupPercent : null,
+    generatedAt: formatLocalDateTime(
+      ...(() => {
+        const parts = getDatePartsAtOffset(now, 8 * 60);
+        return [parts.year, parts.month, parts.day, parts.hour, parts.minute] as const;
+      })(),
+    ),
+    entries,
   };
 }
 
@@ -2752,7 +3087,7 @@ export async function getTrafficBoardShellView(
 ): Promise<TrafficBoardShellView> {
   const customers: CustomerRecord[] = (await getCustomersForAdmin(adminSession))
     .map(toCustomerRecord)
-    .filter((customer) => (isNewCustomerGiftTrafficPeriod(period) ? (customer.cumulativeGiftCreditUsd ?? 0) > 0 : true));
+    .filter((customer) => shouldIncludeCustomerInTrafficBoardPeriod(customer, period));
   const rowsWithMeta = customers.map((customer) => buildTrafficBoardBaseRow(customer, locale, period, now));
   const generatedAt = formatLocalDateTime(
     ...(() => {
@@ -2803,7 +3138,7 @@ export async function getTrafficBoardView(
 ): Promise<TrafficBoardView> {
   const customers: CustomerRecord[] = (await getCustomersForAdmin(adminSession))
     .map(toCustomerRecord)
-    .filter((customer) => (isNewCustomerGiftTrafficPeriod(period) ? (customer.cumulativeGiftCreditUsd ?? 0) > 0 : true));
+    .filter((customer) => shouldIncludeCustomerInTrafficBoardPeriod(customer, period));
 
   const rows = await Promise.all(
     customers.map((customer) => buildTrafficBoardRow(customer, locale, period, now)),
@@ -3073,6 +3408,7 @@ export async function createCustomer(input: {
   renewalDay?: number | null;
   monthlyGiftCreditUsd?: number | null;
   cumulativeGiftCreditUsd?: number | null;
+  availableRechargeUsd?: number | null;
   cumulativeRechargeUsd?: number | null;
   trafficMarkupPercent?: number | null;
   notes?: string;
@@ -3084,6 +3420,8 @@ export async function createCustomer(input: {
   const renewalDay = normalizeRenewalDay(input.renewalDay);
   const monthlyGiftCreditUsd = normalizeGiftCreditUsd(input.monthlyGiftCreditUsd);
   const cumulativeGiftCreditUsd = normalizeGiftCreditUsd(input.cumulativeGiftCreditUsd);
+  const availableRechargeUsd =
+    normalizeRechargeUsd(input.availableRechargeUsd) ?? normalizeRechargeUsd(input.cumulativeRechargeUsd);
   const cumulativeRechargeUsd = normalizeRechargeUsd(input.cumulativeRechargeUsd);
   const trafficMarkupPercent = isSuperAdmin(input.adminSession)
     ? normalizeTrafficMarkupPercent(input.trafficMarkupPercent)
@@ -3102,6 +3440,7 @@ export async function createCustomer(input: {
       renewalDay,
       monthlyGiftCreditUsd,
       cumulativeGiftCreditUsd,
+      availableRechargeUsd,
       cumulativeRechargeUsd,
       trafficMarkupPercent,
     },
@@ -3122,6 +3461,7 @@ export async function updateCustomer(
     renewalDay?: number | null;
     monthlyGiftCreditUsd?: number | null;
     cumulativeGiftCreditUsd?: number | null;
+    availableRechargeUsd?: number | null;
     cumulativeRechargeUsd?: number | null;
     trafficMarkupPercent?: number | null;
     notes?: string;
@@ -3139,6 +3479,8 @@ export async function updateCustomer(
   const renewalDay = normalizeRenewalDay(input.renewalDay);
   const monthlyGiftCreditUsd = normalizeGiftCreditUsd(input.monthlyGiftCreditUsd);
   const cumulativeGiftCreditUsd = normalizeGiftCreditUsd(input.cumulativeGiftCreditUsd);
+  const availableRechargeUsd =
+    normalizeRechargeUsd(input.availableRechargeUsd) ?? normalizeRechargeUsd(existingCustomer.availableRechargeUsd);
   const cumulativeRechargeUsd = normalizeRechargeUsd(input.cumulativeRechargeUsd);
   const trafficMarkupPercent = isSuperAdmin(input.adminSession)
     ? normalizeTrafficMarkupPercent(input.trafficMarkupPercent)
@@ -3158,6 +3500,7 @@ export async function updateCustomer(
       renewalDay,
       monthlyGiftCreditUsd,
       cumulativeGiftCreditUsd,
+      availableRechargeUsd,
       cumulativeRechargeUsd,
       trafficMarkupPercent,
     },
