@@ -1953,6 +1953,7 @@ function buildHardcodedQueryFiltersForUtcWindow(filters: ReportFilters, startUtc
 function resolveHardcodedMrsukanDomainSegments(
   customer: Pick<CustomerRecord, "authCode">,
   filters: ReportFilters,
+  selectedDomain?: string | null,
 ): HardcodedDomainQuerySegment[] | null {
   if (!isHardcodedMrsukanCutoverCustomer(customer)) {
     return null;
@@ -1962,6 +1963,44 @@ function resolveHardcodedMrsukanDomainSegments(
   const queryStartUtc = new Date(window.startTime);
   const queryEndUtc = new Date(window.endTime);
   const cutoverUtc = MRSUKAN_REPORT_CUTOVER.cutoverUtc;
+  const requestedLegacyDomain = selectedDomain === MRSUKAN_REPORT_CUTOVER.legacyDomain;
+  const requestedNextDomain = selectedDomain === MRSUKAN_REPORT_CUTOVER.nextDomain;
+
+  if (requestedLegacyDomain) {
+    if (queryStartUtc.getTime() >= cutoverUtc.getTime()) {
+      return [];
+    }
+
+    return [
+      {
+        domain: MRSUKAN_REPORT_CUTOVER.legacyDomain,
+        filters:
+          queryEndUtc.getTime() <= cutoverUtc.getTime()
+            ? filters
+            : buildHardcodedQueryFiltersForUtcWindow(
+                filters,
+                queryStartUtc,
+                new Date(cutoverUtc.getTime() - 60 * 1000),
+              ),
+      },
+    ];
+  }
+
+  if (requestedNextDomain) {
+    if (queryEndUtc.getTime() <= cutoverUtc.getTime()) {
+      return [];
+    }
+
+    return [
+      {
+        domain: MRSUKAN_REPORT_CUTOVER.nextDomain,
+        filters:
+          queryStartUtc.getTime() >= cutoverUtc.getTime()
+            ? filters
+            : buildHardcodedQueryFiltersForUtcWindow(filters, cutoverUtc, queryEndUtc),
+      },
+    ];
+  }
 
   if (queryEndUtc.getTime() <= cutoverUtc.getTime()) {
     return [
@@ -2275,12 +2314,20 @@ async function buildHardcodedMrsukanReport(
   customer: CustomerRecord,
   filters: ReportFilters,
   locale: Locale,
+  selectedDomain?: string | null,
 ): Promise<LiveDomainReportResult> {
-  const segments = resolveHardcodedMrsukanDomainSegments(customer, filters);
+  const segments = resolveHardcodedMrsukanDomainSegments(customer, filters, selectedDomain);
   if (!segments) {
     return {
       data: null,
       reason: "request_failed",
+    };
+  }
+
+  if (segments.length === 0) {
+    return {
+      data: null,
+      reason: "empty",
     };
   }
 
@@ -4696,8 +4743,13 @@ export async function getAdminReportRecordsWithFilters(
 
     if (selectedCustomer && selectedDomain) {
       try {
-        if (isHardcodedMrsukanCutoverCustomer(selectedCustomer) && selectedDomain !== ALL_CLIENT_DOMAINS) {
-          const hardcodedReportResult = await buildHardcodedMrsukanReport(selectedCustomer, effectiveFilters, locale);
+        if (isHardcodedMrsukanCutoverCustomer(selectedCustomer)) {
+          const hardcodedReportResult = await buildHardcodedMrsukanReport(
+            selectedCustomer,
+            effectiveFilters,
+            locale,
+            selectedDomain === ALL_CLIENT_DOMAINS ? null : selectedDomain,
+          );
           liveReportResult = hardcodedReportResult.data;
         } else {
           allDomainsReportResult =
@@ -4834,11 +4886,20 @@ export async function getClientDashboard(
   }
 
   const allDomainsReportResult = shouldAggregateAllDomains
-    ? await buildAllDomainsTrafficReport(customer.domains, effectiveFilters, locale)
+    ? isHardcodedMrsukanCutoverCustomer(customer)
+      ? null
+      : await buildAllDomainsTrafficReport(customer.domains, effectiveFilters, locale)
     : null;
   const liveReport =
-    isHardcodedMrsukanCutoverCustomer(customer) && !shouldAggregateAllDomains
-      ? (await buildHardcodedMrsukanReport(customer, effectiveFilters, locale)).data
+    isHardcodedMrsukanCutoverCustomer(customer)
+      ? (
+          await buildHardcodedMrsukanReport(
+            customer,
+            effectiveFilters,
+            locale,
+            shouldAggregateAllDomains ? null : selectedDomain,
+          )
+        ).data
       : shouldAggregateAllDomains
         ? allDomainsReportResult?.report ?? null
         : await fetchLiveDomainReport(selectedDomain, effectiveFilters, locale);
