@@ -30,6 +30,7 @@ export type ReportFilters = {
   timeZone?: string;
   timeZoneOffsetMinutes?: number;
   renewalDay?: number;
+  allowLongRange?: boolean;
 };
 
 export type ResolvedReportWindow = {
@@ -392,6 +393,10 @@ export function parseReportFilters(
   const timeZoneOffsetMinutes = parseTimeZoneOffsetMinutes(
     typeof searchParams?.tzOffset === "string" ? searchParams.tzOffset : undefined,
   );
+  const allowLongRange =
+    typeof searchParams?.allowLongRange === "string"
+      ? searchParams.allowLongRange === "1" || searchParams.allowLongRange.toLowerCase() === "true"
+      : undefined;
 
   return {
     customerId,
@@ -404,6 +409,7 @@ export function parseReportFilters(
     to,
     timeZone,
     timeZoneOffsetMinutes,
+    allowLongRange,
   };
 }
 
@@ -443,7 +449,7 @@ export function resolveReportWindow(filters: ReportFilters, now = new Date()): R
     endTime = now;
   }
 
-  if (endTime.getTime() - startTime.getTime() > MAX_RANGE_MS) {
+  if (!filters.allowLongRange && endTime.getTime() - startTime.getTime() > MAX_RANGE_MS) {
     startTime = new Date(endTime.getTime() - MAX_RANGE_MS);
   }
 

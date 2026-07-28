@@ -972,6 +972,7 @@ function buildTrafficBoardFilters(period: TrafficBoardPeriod, renewalDay: number
     return {
       filters: {
         ...baseFilters,
+        allowLongRange: true,
         from: formatLocalDateTime(startYear, startMonth, startDay, 0, 0),
         to: formatLocalDateTime(nowParts.year, nowParts.month, nowParts.day, nowParts.hour, nowParts.minute),
       },
@@ -1146,6 +1147,10 @@ function buildTrafficBoardReportHref(
     params.set("tzOffset", String(filters.timeZoneOffsetMinutes));
   }
 
+  if (filters.allowLongRange) {
+    params.set("allowLongRange", "1");
+  }
+
   return `/admin/reports?${params.toString()}`;
 }
 
@@ -1156,7 +1161,7 @@ function getTrafficMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
     }
 
     if (period === "newCustomerGift") {
-      return "Gift Consumption Traffic";
+      return "Cumulative Consumption Traffic";
     }
 
     if (period === "today") {
@@ -1199,7 +1204,7 @@ function getTrafficMetricLabel(locale: Locale, period: TrafficBoardPeriod) {
   }
 
   if (period === "newCustomerGift") {
-    return "赠送消耗流量";
+    return "累计消耗流量";
   }
 
   if (period === "last24") {
@@ -1939,14 +1944,92 @@ function isHardcodedMrsukanCutoverCustomer(customer: Pick<CustomerRecord, "authC
   return customer.authCode === MRSUKAN_REPORT_CUTOVER.authCode;
 }
 
+const LONG_RANGE_SEGMENT_MS = 31 * 24 * 60 * 60 * 1000;
+const LONG_RANGE_SEGMENT_STEP_MS = 60 * 1000;
+
 function buildHardcodedQueryFiltersForUtcWindow(filters: ReportFilters, startUtc: Date, endUtc: Date): ReportFilters {
   const offsetMinutes = filters.timeZoneOffsetMinutes ?? 8 * 60;
 
   return {
     ...filters,
+    allowLongRange: false,
     timeRange: "custom",
     from: formatLocalDateTimeAtOffset(startUtc, offsetMinutes),
     to: formatLocalDateTimeAtOffset(endUtc, offsetMinutes),
+  };
+}
+
+function shouldSegmentLongRangeFilters(filters: ReportFilters) {
+  if (!filters.allowLongRange || filters.timeRange !== "custom" || !filters.from || !filters.to) {
+    return false;
+  }
+
+  const window = resolveReportWindow(filters);
+  const startUtc = new Date(window.startTime);
+  const endUtc = new Date(window.endTime);
+
+  return endUtc.getTime() - startUtc.getTime() > LONG_RANGE_SEGMENT_MS;
+}
+
+function splitLongRangeReportFilters(filters: ReportFilters) {
+  const window = resolveReportWindow(filters);
+  const segments: ReportFilters[] = [];
+  const endUtc = new Date(window.endTime);
+  let cursorUtc = new Date(window.startTime);
+
+  while (cursorUtc.getTime() <= endUtc.getTime()) {
+    const nextEndUtc = new Date(
+      Math.min(cursorUtc.getTime() + LONG_RANGE_SEGMENT_MS - LONG_RANGE_SEGMENT_STEP_MS, endUtc.getTime()),
+    );
+
+    segments.push(buildHardcodedQueryFiltersForUtcWindow(filters, cursorUtc, nextEndUtc));
+
+    if (nextEndUtc.getTime() >= endUtc.getTime()) {
+      break;
+    }
+
+    cursorUtc = new Date(nextEndUtc.getTime() + LONG_RANGE_SEGMENT_STEP_MS);
+  }
+
+  return segments;
+}
+
+async function buildSegmentedLiveDomainReport(
+  domain: string,
+  filters: ReportFilters,
+  locale: Locale,
+): Promise<LiveDomainReportResult> {
+  if (!shouldSegmentLongRangeFilters(filters)) {
+    return fetchLiveDomainReportResult(domain, filters, locale);
+  }
+
+  const reports: LiveDomainReportData[] = [];
+
+  for (const segmentFilters of splitLongRangeReportFilters(filters)) {
+    const result = await fetchLiveDomainReportResult(domain, segmentFilters, locale);
+
+    if (result.reason && result.reason !== "empty") {
+      return {
+        data: null,
+        reason: result.reason,
+      };
+    }
+
+    if (result.data) {
+      reports.push(result.data);
+    }
+  }
+
+  if (reports.length === 0) {
+    return {
+      data: null,
+      reason: "empty",
+    };
+  }
+
+  return {
+    data: reports.length === 1 ? reports[0] : mergeLiveDomainReports(reports, locale, filters),
+    reason: null,
   };
 }
 
@@ -2316,6 +2399,37 @@ async function buildHardcodedMrsukanReport(
   locale: Locale,
   selectedDomain?: string | null,
 ): Promise<LiveDomainReportResult> {
+  if (shouldSegmentLongRangeFilters(filters)) {
+    const reports: LiveDomainReportData[] = [];
+
+    for (const segmentFilters of splitLongRangeReportFilters(filters)) {
+      const result = await buildHardcodedMrsukanReport(customer, segmentFilters, locale, selectedDomain);
+
+      if (result.reason && result.reason !== "empty") {
+        return {
+          data: null,
+          reason: result.reason,
+        };
+      }
+
+      if (result.data) {
+        reports.push(result.data);
+      }
+    }
+
+    if (reports.length === 0) {
+      return {
+        data: null,
+        reason: "empty",
+      };
+    }
+
+    return {
+      data: reports.length === 1 ? reports[0] : mergeLiveDomainReports(reports, locale, filters),
+      reason: null,
+    };
+  }
+
   const segments = resolveHardcodedMrsukanDomainSegments(customer, filters, selectedDomain);
   if (!segments) {
     return {
@@ -2402,7 +2516,44 @@ async function buildHardcodedMrsukanRegionalTrafficSummary(
   customer: CustomerRecord,
   filters: ReportFilters,
   locale: Locale,
-) {
+): Promise<{
+  totalTrafficGb: number;
+  totalCostUsd: number;
+  matchedDomainCount: number;
+  failureReason: LiveDomainReportFailureReason | null;
+}> {
+  if (shouldSegmentLongRangeFilters(filters)) {
+    let totalTrafficGb = 0;
+    let totalCostUsd = 0;
+    let matchedDomainCount = 0;
+
+    for (const segmentFilters of splitLongRangeReportFilters(filters)) {
+      const result = await buildHardcodedMrsukanRegionalTrafficSummary(customer, segmentFilters, locale);
+
+      if (result.failureReason && result.failureReason !== "empty") {
+        return {
+          totalTrafficGb: 0,
+          totalCostUsd: 0,
+          matchedDomainCount: 0,
+          failureReason: result.failureReason,
+        };
+      }
+
+      if (result.matchedDomainCount > 0) {
+        totalTrafficGb += result.totalTrafficGb;
+        totalCostUsd += result.totalCostUsd;
+        matchedDomainCount = Math.max(matchedDomainCount, result.matchedDomainCount);
+      }
+    }
+
+    return {
+      totalTrafficGb: Number(totalTrafficGb.toFixed(2)),
+      totalCostUsd: Number(totalCostUsd.toFixed(2)),
+      matchedDomainCount,
+      failureReason: matchedDomainCount > 0 ? null : ("empty" as LiveDomainReportFailureReason),
+    };
+  }
+
   const segments = resolveHardcodedMrsukanDomainSegments(customer, filters);
   if (!segments) {
     return {
@@ -2496,7 +2647,47 @@ async function buildAllDomainsTrafficReport(
   domains: string[],
   filters: ReportFilters,
   locale: Locale,
-) {
+): Promise<{
+  report: LiveDomainReportData | null;
+  matchedDomainCount: number;
+  failureReason: LiveDomainReportFailureReason | null;
+}> {
+  if (shouldSegmentLongRangeFilters(filters)) {
+    const reports: LiveDomainReportData[] = [];
+    let matchedDomainCount = 0;
+
+    for (const segmentFilters of splitLongRangeReportFilters(filters)) {
+      const result = await buildAllDomainsTrafficReport(domains, segmentFilters, locale);
+
+      if (result.failureReason && result.failureReason !== "empty") {
+        return {
+          report: null,
+          matchedDomainCount: 0,
+          failureReason: result.failureReason,
+        };
+      }
+
+      if (result.report) {
+        reports.push(result.report);
+        matchedDomainCount = Math.max(matchedDomainCount, result.matchedDomainCount);
+      }
+    }
+
+    if (reports.length === 0) {
+      return {
+        report: null,
+        matchedDomainCount: 0,
+        failureReason: "empty" as LiveDomainReportFailureReason,
+      };
+    }
+
+    return {
+      report: reports.length === 1 ? reports[0] : mergeLiveDomainReports(reports, locale, filters),
+      matchedDomainCount,
+      failureReason: null,
+    };
+  }
+
   const results: Array<{
     domain: string;
     result: LiveDomainReportResult;
@@ -2572,7 +2763,6 @@ async function buildAllDomainsTrafficReport(
       pvUvTrend: [] as DualSeriesPoint[],
       trafficTrend,
       peakBandwidth,
-      highlights: [] as ActivityItem[],
       trafficUsageTable: aggregateTrafficUsageTable(reports, locale),
       audienceUsageTable: [] as TableRow[],
       regionalTrafficTable: regionalTrafficComplete ? aggregatedRegional.rows : [],
@@ -2627,7 +2817,44 @@ async function buildAllDomainsRegionalTrafficSummary(
   domains: string[],
   filters: ReportFilters,
   locale: Locale,
-) {
+): Promise<{
+  totalTrafficGb: number;
+  totalCostUsd: number;
+  matchedDomainCount: number;
+  failureReason: LiveDomainReportFailureReason | null;
+}> {
+  if (shouldSegmentLongRangeFilters(filters)) {
+    let totalTrafficGb = 0;
+    let totalCostUsd = 0;
+    let matchedDomainCount = 0;
+
+    for (const segmentFilters of splitLongRangeReportFilters(filters)) {
+      const result = await buildAllDomainsRegionalTrafficSummary(domains, segmentFilters, locale);
+
+      if (result.failureReason && result.failureReason !== "empty") {
+        return {
+          totalTrafficGb: 0,
+          totalCostUsd: 0,
+          matchedDomainCount: 0,
+          failureReason: result.failureReason,
+        };
+      }
+
+      if (result.matchedDomainCount > 0) {
+        totalTrafficGb += result.totalTrafficGb;
+        totalCostUsd += result.totalCostUsd;
+        matchedDomainCount = Math.max(matchedDomainCount, result.matchedDomainCount);
+      }
+    }
+
+    return {
+      totalTrafficGb: Number(totalTrafficGb.toFixed(2)),
+      totalCostUsd: Number(totalCostUsd.toFixed(2)),
+      matchedDomainCount,
+      failureReason: matchedDomainCount > 0 ? null : ("empty" as LiveDomainReportFailureReason),
+    };
+  }
+
   const results: Array<{
     domain: string;
     result: Awaited<ReturnType<typeof fetchLiveDomainRegionalTrafficSummaryResult>>;
@@ -4759,7 +4986,7 @@ export async function getAdminReportRecordsWithFilters(
           liveReportResult =
             selectedDomain === ALL_CLIENT_DOMAINS
               ? allDomainsReportResult?.report ?? null
-              : await fetchLiveDomainReport(selectedDomain, effectiveFilters, locale);
+              : (await buildSegmentedLiveDomainReport(selectedDomain, effectiveFilters, locale)).data;
         }
       } catch (error) {
         console.error("Failed to load live admin report", {
@@ -4902,7 +5129,7 @@ export async function getClientDashboard(
         ).data
       : shouldAggregateAllDomains
         ? allDomainsReportResult?.report ?? null
-        : await fetchLiveDomainReport(selectedDomain, effectiveFilters, locale);
+        : (await buildSegmentedLiveDomainReport(selectedDomain, effectiveFilters, locale)).data;
   const adjustedLiveReport = liveReport
     ? applyTrafficMarkupToLiveReportData(liveReport, customer.trafficMarkupPercent, locale)
     : liveReport;
