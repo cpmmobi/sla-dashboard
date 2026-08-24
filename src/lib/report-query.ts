@@ -396,7 +396,7 @@ export function parseReportFilters(
   const allowLongRange =
     typeof searchParams?.allowLongRange === "string"
       ? searchParams.allowLongRange === "1" || searchParams.allowLongRange.toLowerCase() === "true"
-      : undefined;
+      : timeRange === "custom";
 
   return {
     customerId,
