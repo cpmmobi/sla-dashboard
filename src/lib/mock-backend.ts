@@ -2004,26 +2004,29 @@ async function buildSegmentedLiveDomainReport(
   }
 
   const reports: LiveDomainReportData[] = [];
+  let lastFailureReason: LiveDomainReportFailureReason | null = null;
 
-  for (const segmentFilters of splitLongRangeReportFilters(filters)) {
-    const result = await fetchLiveDomainReportResult(domain, segmentFilters, locale);
-
-    if (result.reason && result.reason !== "empty") {
-      return {
-        data: null,
-        reason: result.reason,
-      };
+  for (const [index, segmentFilters] of splitLongRangeReportFilters(filters).entries()) {
+    if (index > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
+
+    const result = await fetchLiveDomainReportResult(domain, segmentFilters, locale);
 
     if (result.data) {
       reports.push(result.data);
+      continue;
+    }
+
+    if (result.reason && result.reason !== "empty") {
+      lastFailureReason = result.reason;
     }
   }
 
   if (reports.length === 0) {
     return {
       data: null,
-      reason: "empty",
+      reason: lastFailureReason ?? "empty",
     };
   }
 

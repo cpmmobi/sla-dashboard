@@ -158,6 +158,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
   const [isLoadingLive, setIsLoadingLive] = useState(false);
   const [hasRequestedLive, setHasRequestedLive] = useState(false);
   const liveRequestRef = useRef<AbortController | null>(null);
+  const liveRequestIdRef = useRef(0);
   const isClientMode = props.mode === "client";
   const adminRecords = props.mode === "admin" ? (liveRecords ?? props.records) : [];
 
@@ -225,15 +226,23 @@ export function TrafficReportView(props: TrafficReportViewProps) {
     });
 
     const nextQuery = params.toString();
+    const nextUrl = `${pathname}?${nextQuery}`;
+
+    if (props.mode === "admin") {
+      window.history.replaceState(window.history.state, "", nextUrl);
+      return nextQuery;
+    }
 
     if (trackPending) {
       setPendingQuery(nextQuery);
     }
 
     startTransition(() => {
-      router.replace(`${pathname}?${nextQuery}`);
+      router.replace(nextUrl);
     });
-  }, [browserTimeZone, browserTimeZoneOffsetMinutes, pathname, router, searchParams, startTransition]);
+
+    return nextQuery;
+  }, [browserTimeZone, browserTimeZoneOffsetMinutes, pathname, props.mode, router, searchParams, startTransition]);
 
   useEffect(() => {
     if (!pendingQuery) {
@@ -420,6 +429,8 @@ export function TrafficReportView(props: TrafficReportViewProps) {
 
     liveRequestRef.current?.abort();
     const controller = new AbortController();
+    const requestId = liveRequestIdRef.current + 1;
+    liveRequestIdRef.current = requestId;
     liveRequestRef.current = controller;
     setHasRequestedLive(true);
     setIsLoadingLive(true);
@@ -438,7 +449,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
         }
 
         const payload = (await response.json()) as { records?: AdminReportRecord[] };
-        if (Array.isArray(payload.records) && !controller.signal.aborted) {
+        if (Array.isArray(payload.records) && liveRequestIdRef.current === requestId) {
           setLiveRecords(payload.records);
         }
       })
@@ -449,7 +460,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
         console.error("Failed to load live admin reports", error);
       })
       .finally(() => {
-        if (!controller.signal.aborted) {
+        if (liveRequestIdRef.current === requestId) {
           setIsLoadingLive(false);
         }
       });

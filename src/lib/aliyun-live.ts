@@ -239,10 +239,15 @@ function isRetryableAliyunError(error: unknown) {
     return false;
   }
 
+  const errorCode = getAliyunErrorCode(error);
+
   return (
     error.name === "RequestTimeoutError" ||
+    error.name === "ThrottlingError" ||
+    errorCode === "Throttling.User" ||
     error.message.includes("ConnectTimeout") ||
-    error.message.includes("ReadTimeout")
+    error.message.includes("ReadTimeout") ||
+    error.message.includes("Throttling")
   );
 }
 
@@ -251,7 +256,7 @@ async function withAliyunRetry<T>(
   requestDebug: Record<string, unknown>,
   factory: () => Promise<T>,
 ) {
-  const maxAttempts = 2;
+  const maxAttempts = 3;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -270,6 +275,8 @@ async function withAliyunRetry<T>(
       if (attempt >= maxAttempts || !isRetryableAliyunError(error)) {
         throw error;
       }
+
+      await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
     }
   }
 
@@ -791,66 +798,59 @@ async function fetchRegionalTrafficSummaries(
   locale: Locale,
   requestDebug: Record<string, unknown>,
 ): Promise<RegionalTrafficFetchResult> {
-  const regionalResults = await Promise.all(
-    ALIYUN_TRAFFIC_AREAS.map(async (area, sortOrder) => {
-      try {
-        const response = await withAliyunRetry(
-          `regionalTraffic:${area.code}`,
-          {
-            ...requestDebug,
-            regionalArea: area.code,
-          },
-          () =>
-            client.describeDomainUsageData(
-              new DescribeDomainUsageDataRequest({
-                regionId,
-                domainName: domain,
-                startTime,
-                endTime,
-                field: "traf",
-                type: "all",
-                area: area.code,
-                dataProtocol: "all",
-                interval,
-              }),
-            ),
-        );
+  const summaries: RegionalTrafficSummary[] = [];
+  let complete = true;
+  let failureReason: LiveDomainReportFailureReason | null = null;
 
-        const modules = response.body?.usageDataPerInterval?.dataModule ?? [];
+  for (const [sortOrder, area] of ALIYUN_TRAFFIC_AREAS.entries()) {
+    try {
+      const response = await withAliyunRetry(
+        `regionalTraffic:${area.code}`,
+        {
+          ...requestDebug,
+          regionalArea: area.code,
+        },
+        () =>
+          client.describeDomainUsageData(
+            new DescribeDomainUsageDataRequest({
+              regionId,
+              domainName: domain,
+              startTime,
+              endTime,
+              field: "traf",
+              type: "all",
+              area: area.code,
+              dataProtocol: "all",
+              interval,
+            }),
+          ),
+      );
 
-        return {
-          ok: true as const,
-          summary: {
-            code: area.code,
-            label: area.label[locale],
-            trafficBytes: modules.reduce((sum, item) => sum + parseNumericValue(item.value), 0),
-            sortOrder,
-          } satisfies RegionalTrafficSummary,
-        };
-      } catch (error) {
-        console.warn(
-          `Alibaba Cloud Live API regional traffic request failed ${stringifyDebugPayload({
-            ...requestDebug,
-            regionalArea: area.code,
-            error: simplifyError(error),
-          })}`,
-        );
+      const modules = response.body?.usageDataPerInterval?.dataModule ?? [];
 
-        return {
-          ok: false as const,
-          reason: (isAliyunDomainNotFoundError(error) ? "domain_not_found" : "request_failed") as LiveDomainReportFailureReason,
-        };
-      }
-    }),
-  );
-
-  const summaries = regionalResults.flatMap((result) => (result.ok ? [result.summary] : []));
-  const failedResult = regionalResults.find((result) => !result.ok);
+      summaries.push({
+        code: area.code,
+        label: area.label[locale],
+        trafficBytes: modules.reduce((sum, item) => sum + parseNumericValue(item.value), 0),
+        sortOrder,
+      } satisfies RegionalTrafficSummary);
+    } catch (error) {
+      complete = false;
+      failureReason = isAliyunDomainNotFoundError(error) ? "domain_not_found" : "request_failed";
+      console.warn(
+        `Alibaba Cloud Live API regional traffic request failed ${stringifyDebugPayload({
+          ...requestDebug,
+          regionalArea: area.code,
+          error: simplifyError(error),
+        })}`,
+      );
+    }
+  }
 
   return {
     summaries,
-    complete: !failedResult,
-    failureReason: failedResult && !failedResult.ok ? failedResult.reason : null,
+    complete,
+    failureReason,
   };
 }
 
