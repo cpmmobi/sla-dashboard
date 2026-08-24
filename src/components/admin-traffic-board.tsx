@@ -113,12 +113,13 @@ export function AdminTrafficBoard({
     () =>
       view.rows.map((row) => ({
         ...row,
-        loading: shouldFetchTraffic(row),
+        loading: false,
         loaded: !shouldFetchTraffic(row),
       })),
     [view.rows],
   );
   const [rows, setRows] = useState<TrafficBoardRowState[]>(initialRows);
+  const [hasRequested, setHasRequested] = useState(false);
   const [trafficSortDirection, setTrafficSortDirection] = useState<TrafficSortDirection>("desc");
   const [selectedHistoryCustomer, setSelectedHistoryCustomer] = useState<TrafficBoardRowState | null>(null);
   const [cycleHistory, setCycleHistory] = useState<TrafficBoardCycleHistoryView | null>(null);
@@ -128,7 +129,10 @@ export function AdminTrafficBoard({
   const requestGenerationRef = useRef(0);
 
   useEffect(() => {
+    requestGenerationRef.current += 1;
+    requestQueueRef.current = Promise.resolve();
     setRows(initialRows);
+    setHasRequested(false);
   }, [initialRows]);
 
   function toggleTrafficSortDirection() {
@@ -278,10 +282,11 @@ export function AdminTrafficBoard({
     [requestRowTraffic],
   );
 
-  useEffect(() => {
+  const runTrafficBoardQuery = useCallback(() => {
     requestGenerationRef.current += 1;
     const generation = requestGenerationRef.current;
     requestQueueRef.current = Promise.resolve();
+    setHasRequested(true);
 
     for (const row of view.rows) {
       if (!shouldFetchTraffic(row)) {
@@ -298,11 +303,6 @@ export function AdminTrafficBoard({
           await requestRowTraffic(row, () => generation !== requestGenerationRef.current);
         });
     }
-
-    return () => {
-      requestGenerationRef.current += 1;
-      requestQueueRef.current = Promise.resolve();
-    };
   }, [requestRowTraffic, view.rows]);
 
   function buildPeriodHref(period: TrafficBoardPeriod) {
@@ -313,6 +313,7 @@ export function AdminTrafficBoard({
 
   const requestableCount = rows.filter((row) => shouldFetchTraffic(row)).length;
   const resolvedCount = rows.filter((row) => shouldFetchTraffic(row) && row.loaded).length;
+  const isBoardQuerying = rows.some((row) => row.loading);
   const totalTrafficGb = rows.reduce((sum, row) => sum + row.trafficGb, 0);
   const totalTrafficCostUsd = rows.reduce((sum, row) => sum + row.trafficCostUsd, 0);
   const liveCustomerCount = rows.filter((row) => row.hasLiveData).length;
@@ -569,7 +570,7 @@ export function AdminTrafficBoard({
         title={tableTitle ?? t.adminTrafficBoardPage.tableTitle}
         aside={
           <div className="flex flex-col items-start gap-1.5 sm:items-end">
-            <div className="flex max-w-[720px] flex-wrap gap-1.5 sm:justify-end">
+            <div className="flex max-w-[720px] flex-wrap items-center gap-1.5 sm:justify-end">
               {periods.map((period) => {
                 const active = period === view.period;
                 return (
@@ -586,6 +587,18 @@ export function AdminTrafficBoard({
                   </Link>
                 );
               })}
+              <button
+                type="button"
+                onClick={runTrafficBoardQuery}
+                disabled={isBoardQuerying || requestableCount === 0}
+                className={`rounded-full px-3.5 py-1.5 text-xs font-medium leading-none transition ${
+                  isBoardQuerying
+                    ? "cursor-wait bg-slate-800 text-white opacity-80"
+                    : "bg-slate-900 text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-white"
+                }`}
+              >
+                {isBoardQuerying ? t.adminTrafficBoardPage.querying : t.adminTrafficBoardPage.query}
+              </button>
             </div>
             <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500 sm:justify-end">
               <p>{view.cycleHint}</p>
@@ -594,6 +607,16 @@ export function AdminTrafficBoard({
           </div>
         }
       >
+        {!hasRequested && !isBoardQuerying && rows.length > 0 ? (
+          <div className="mb-3 rounded-[18px] border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            {t.adminTrafficBoardPage.queryIdleNotice}
+          </div>
+        ) : null}
+        {isBoardQuerying ? (
+          <div className="mb-3 rounded-[18px] border border-rose-200 bg-gradient-to-r from-rose-50 to-orange-50 px-4 py-3 text-sm text-rose-700">
+            {t.adminTrafficBoardPage.loadingDescription}
+          </div>
+        ) : null}
         {rows.length === 0 ? (
           <div className="rounded-[24px] border border-dashed border-slate-200 bg-slate-50 px-5 py-8 text-center">
             <p className="text-base font-semibold text-slate-950">{t.trafficBoard.emptyTitle}</p>
@@ -672,7 +695,7 @@ export function AdminTrafficBoard({
                     </div>
                   ) : (
                     <span className="block text-sm font-medium leading-5 text-slate-950">
-                      {row.hasLiveData ? row.traffic : t.trafficBoard.noData}
+                      {row.hasLiveData ? row.traffic : hasRequested ? t.trafficBoard.noData : "--"}
                     </span>
                   )}
                   {row.trafficCost ? (

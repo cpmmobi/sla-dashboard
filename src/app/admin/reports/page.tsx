@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { DashboardShell } from "@/components/dashboard-ui";
 import { buildAdminNav } from "@/lib/admin-nav";
 import { TrafficReportView } from "@/components/traffic-report-view";
@@ -6,6 +7,8 @@ import { getCurrentLocale } from "@/lib/locale";
 import { requireAdminSession } from "@/lib/admin-auth";
 import { getAdminReportRecordsWithFilters } from "@/lib/mock-backend";
 import { parseReportFilters } from "@/lib/report-query";
+
+export const dynamic = "force-dynamic";
 
 export default async function AdminReportsPage({
   searchParams,
@@ -17,7 +20,9 @@ export default async function AdminReportsPage({
   const locale = await getCurrentLocale();
   const t = getTranslations(locale);
   const filters = parseReportFilters(params);
-  const reportRecords = await getAdminReportRecordsWithFilters(locale, adminSession, filters);
+  const reportRecords = await getAdminReportRecordsWithFilters(locale, adminSession, filters, {
+    includeLive: false,
+  });
   const nav = buildAdminNav(locale, adminSession, "reports");
 
   return (
@@ -29,13 +34,14 @@ export default async function AdminReportsPage({
       logoutLabel={t.common.signOut}
       logoutHref="/api/logout"
     >
-      <TrafficReportView
-        key={JSON.stringify(filters)}
-        mode="admin"
-        records={reportRecords}
-        locale={locale}
-        filters={filters}
-      />
+      <Suspense fallback={null}>
+        <TrafficReportView
+          mode="admin"
+          records={reportRecords}
+          locale={locale}
+          filters={filters}
+        />
+      </Suspense>
     </DashboardShell>
   );
 }

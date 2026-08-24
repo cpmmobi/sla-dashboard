@@ -156,8 +156,8 @@ function getAliyunLiveClient() {
       regionId,
       endpoint,
       protocol: "HTTPS",
-      connectTimeout: 15000,
-      readTimeout: 20000,
+      connectTimeout: 8000,
+      readTimeout: 10000,
     }),
   );
   cachedClientKey = clientKey;
@@ -791,59 +791,66 @@ async function fetchRegionalTrafficSummaries(
   locale: Locale,
   requestDebug: Record<string, unknown>,
 ): Promise<RegionalTrafficFetchResult> {
-  const summaries: RegionalTrafficSummary[] = [];
-  let complete = true;
-  let failureReason: LiveDomainReportFailureReason | null = null;
+  const regionalResults = await Promise.all(
+    ALIYUN_TRAFFIC_AREAS.map(async (area, sortOrder) => {
+      try {
+        const response = await withAliyunRetry(
+          `regionalTraffic:${area.code}`,
+          {
+            ...requestDebug,
+            regionalArea: area.code,
+          },
+          () =>
+            client.describeDomainUsageData(
+              new DescribeDomainUsageDataRequest({
+                regionId,
+                domainName: domain,
+                startTime,
+                endTime,
+                field: "traf",
+                type: "all",
+                area: area.code,
+                dataProtocol: "all",
+                interval,
+              }),
+            ),
+        );
 
-  for (const [sortOrder, area] of ALIYUN_TRAFFIC_AREAS.entries()) {
-    try {
-      const response = await withAliyunRetry(
-        `regionalTraffic:${area.code}`,
-        {
-          ...requestDebug,
-          regionalArea: area.code,
-        },
-        () =>
-          client.describeDomainUsageData(
-            new DescribeDomainUsageDataRequest({
-              regionId,
-              domainName: domain,
-              startTime,
-              endTime,
-              field: "traf",
-              type: "all",
-              area: area.code,
-              dataProtocol: "all",
-              interval,
-            }),
-          ),
-      );
+        const modules = response.body?.usageDataPerInterval?.dataModule ?? [];
 
-      const modules = response.body?.usageDataPerInterval?.dataModule ?? [];
+        return {
+          ok: true as const,
+          summary: {
+            code: area.code,
+            label: area.label[locale],
+            trafficBytes: modules.reduce((sum, item) => sum + parseNumericValue(item.value), 0),
+            sortOrder,
+          } satisfies RegionalTrafficSummary,
+        };
+      } catch (error) {
+        console.warn(
+          `Alibaba Cloud Live API regional traffic request failed ${stringifyDebugPayload({
+            ...requestDebug,
+            regionalArea: area.code,
+            error: simplifyError(error),
+          })}`,
+        );
 
-      summaries.push({
-        code: area.code,
-        label: area.label[locale],
-        trafficBytes: modules.reduce((sum, item) => sum + parseNumericValue(item.value), 0),
-        sortOrder,
-      } satisfies RegionalTrafficSummary);
-    } catch (error) {
-      complete = false;
-      failureReason = isAliyunDomainNotFoundError(error) ? "domain_not_found" : "request_failed";
-      console.warn(
-        `Alibaba Cloud Live API regional traffic request failed ${stringifyDebugPayload({
-          ...requestDebug,
-          regionalArea: area.code,
-          error: simplifyError(error),
-        })}`,
-      );
-    }
-  }
+        return {
+          ok: false as const,
+          reason: (isAliyunDomainNotFoundError(error) ? "domain_not_found" : "request_failed") as LiveDomainReportFailureReason,
+        };
+      }
+    }),
+  );
+
+  const summaries = regionalResults.flatMap((result) => (result.ok ? [result.summary] : []));
+  const failedResult = regionalResults.find((result) => !result.ok);
 
   return {
     summaries,
-    complete,
-    failureReason,
+    complete: !failedResult,
+    failureReason: failedResult && !failedResult.ok ? failedResult.reason : null,
   };
 }
 

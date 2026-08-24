@@ -4,6 +4,7 @@ export type Locale = "zh-CN" | "en";
 export type CustomerStatus = "正常" | "待审查" | "停用";
 export type ApiMessageKey =
   | "invalidAdminCredentials"
+  | "adminLoginUnavailable"
   | "adminUnauthorized"
   | "adminOnly"
   | "adminRequiredFields"
@@ -129,6 +130,9 @@ const translations = {
       loading: "正在请求阿里云流量数据...",
       loadingTitle: "正在查询流量数据",
       loadingDescription: "客户和域名较多时会稍慢一些，查到数据后会自动填充到表格里。",
+      query: "查询",
+      querying: "查询中...",
+      queryIdleNotice: "进入页面不会自动查询。请选择时间口径后点击「查询」。",
       generatedAt: (value: string) => `更新时间 ${value}`,
       nav: {
         reports: "流量报表",
@@ -558,6 +562,7 @@ const translations = {
       search: "查询",
       searching: "查询中...",
       searchingNotice: "正在更新查询结果，当前先展示上一版数据。",
+      queryIdleNotice: "进入页面不会自动查询。请选好条件后点击「查询」。",
       confirm: "确定",
       cancel: "取消",
       aliyunOnly: "仅展示阿里云真实数据",
@@ -640,6 +645,7 @@ const translations = {
     },
     api: {
       invalidAdminCredentials: "管理员账号或密码错误。",
+      adminLoginUnavailable: "登录服务暂时不可用，请稍后重试。",
       adminUnauthorized: "请先登录管理员后台。",
       adminOnly: "仅超级管理员可执行此操作。",
       adminRequiredFields: "登录邮箱、显示名称、角色和密码为必填项。",
@@ -756,6 +762,9 @@ const translations = {
       loadingTitle: "Loading traffic data",
       loadingDescription:
         "When there are many customers or domains, the query may take a bit longer. Data fills in automatically once it returns.",
+      query: "Query",
+      querying: "Querying...",
+      queryIdleNotice: "This page does not query automatically. Choose a time range, then click Query.",
       generatedAt: (value: string) => `Updated ${value}`,
       nav: {
         reports: "Traffic Reports",
@@ -1198,6 +1207,7 @@ const translations = {
       search: "Search",
       searching: "Searching...",
       searchingNotice: "Updating results. The previous result set remains visible for now.",
+      queryIdleNotice: "This page does not query automatically. Choose filters, then click Search.",
       confirm: "Confirm",
       cancel: "Cancel",
       aliyunOnly: "Alibaba Cloud only",
@@ -1281,6 +1291,7 @@ const translations = {
     },
     api: {
       invalidAdminCredentials: "Incorrect admin username or password.",
+      adminLoginUnavailable: "The login service is temporarily unavailable. Please try again later.",
       adminUnauthorized: "Please sign in to the admin console first.",
       adminOnly: "Only super admins can perform this action.",
       adminRequiredFields: "Login email, display name, role, and password are required.",

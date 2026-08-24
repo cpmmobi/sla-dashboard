@@ -104,7 +104,6 @@ export function CustomerAuthForm({
 }
 
 export function AdminLoginForm({ locale }: { locale: Locale }) {
-  const router = useRouter();
   const t = getTranslations(locale);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -125,14 +124,14 @@ export function AdminLoginForm({ locale }: { locale: Locale }) {
         body: JSON.stringify({ username, password }),
       });
 
-      const payload = await response.json();
+      const payload = await response.json().catch(() => null);
 
       if (!response.ok) {
-        setError(payload.message ?? t.auth.admin.invalidCredentials);
+        setError(payload?.message ?? t.auth.admin.invalidCredentials);
         return;
       }
 
-      router.push(payload.redirectUrl);
+      window.location.assign(payload?.redirectUrl || "/admin/reports");
     } catch {
       setError(t.auth.admin.unavailable);
     } finally {

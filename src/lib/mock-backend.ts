@@ -20,7 +20,7 @@ import {
 } from "@/lib/aliyun-live";
 import { ALL_CLIENT_DOMAINS } from "@/lib/client-report-constants";
 import { CustomerStatus, Locale } from "@/lib/i18n";
-import { prisma } from "@/lib/prisma";
+import { prisma, withPrismaRetry } from "@/lib/prisma";
 import {
   CLIENT_REPORT_MIN_DATE,
   defaultReportFilters,
@@ -3454,15 +3454,19 @@ export function getCustomers() {
 }
 
 export function getCustomersForAdmin(adminSession: AdminSession) {
-  return prisma.customer.findMany({
-    select: customerCoreSelect,
-    where: isSuperAdmin(adminSession)
-      ? undefined
-      : {
-          accountManagerEmail: adminSession.username,
-        },
-    orderBy: { updatedAt: "desc" },
-  });
+  return withPrismaRetry(
+    () =>
+      prisma.customer.findMany({
+        select: customerCoreSelect,
+        where: isSuperAdmin(adminSession)
+          ? undefined
+          : {
+              accountManagerEmail: adminSession.username,
+            },
+        orderBy: { updatedAt: "desc" },
+      }),
+    "customer.findMany.admin",
+  );
 }
 
 function formatAdminAccessLogDate(date: Date, locale: Locale) {
@@ -3518,9 +3522,13 @@ export async function authenticateCustomer(authCode: string) {
 }
 
 export async function authenticateAdmin(username: string, password: string): Promise<AdminSession | null> {
-  const admin = await prisma.admin.findUnique({
-    where: { username },
-  });
+  const admin = await withPrismaRetry(
+    () =>
+      prisma.admin.findUnique({
+        where: { username },
+      }),
+    "admin.findUnique.authenticate",
+  );
 
   if (!admin || admin.password !== password) {
     return null;
@@ -3538,9 +3546,13 @@ export async function getAdminByUsername(username?: string | null): Promise<Admi
     return null;
   }
 
-  const admin = await prisma.admin.findUnique({
-    where: { username },
-  });
+  const admin = await withPrismaRetry(
+    () =>
+      prisma.admin.findUnique({
+        where: { username },
+      }),
+    "admin.findUnique.session",
+  );
 
   if (!admin) {
     return null;
@@ -4944,7 +4956,10 @@ export async function getAdminReportRecordsWithFilters(
   locale: Locale,
   adminSession: AdminSession,
   filters: ReportFilters = defaultReportFilters,
+  options?: { includeLive?: boolean },
 ): Promise<AdminReportRecord[]> {
+  const includeLive = options?.includeLive !== false;
+
   try {
     const customers: CustomerRecord[] = (await getCustomersForAdmin(adminSession)).map(toCustomerRecord);
     if (customers.length === 0) {
@@ -4968,7 +4983,7 @@ export async function getAdminReportRecordsWithFilters(
     let allDomainsReportResult: Awaited<ReturnType<typeof buildAllDomainsTrafficReport>> | null = null;
     let liveReportResult: Awaited<ReturnType<typeof fetchLiveDomainReport>> | null = null;
 
-    if (selectedCustomer && selectedDomain) {
+    if (includeLive && selectedCustomer && selectedDomain) {
       try {
         if (isHardcodedMrsukanCutoverCustomer(selectedCustomer)) {
           const hardcodedReportResult = await buildHardcodedMrsukanReport(

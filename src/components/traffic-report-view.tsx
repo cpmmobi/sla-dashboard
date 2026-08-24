@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import {
   DataTable,
   MetricCard,
@@ -154,7 +154,16 @@ export function TrafficReportView(props: TrafficReportViewProps) {
         : props.dashboard.selectedDomain),
   );
   const [pendingQuery, setPendingQuery] = useState<string | null>(null);
+  const [liveRecords, setLiveRecords] = useState<AdminReportRecord[] | null>(null);
+  const [isLoadingLive, setIsLoadingLive] = useState(false);
+  const [hasRequestedLive, setHasRequestedLive] = useState(false);
+  const liveRequestRef = useRef<AbortController | null>(null);
   const isClientMode = props.mode === "client";
+  const adminRecords = props.mode === "admin" ? (liveRecords ?? props.records) : [];
+
+  useEffect(() => {
+    return () => liveRequestRef.current?.abort();
+  }, []);
 
   const report = useMemo(() => {
     if (props.mode === "client") {
@@ -162,15 +171,15 @@ export function TrafficReportView(props: TrafficReportViewProps) {
     }
 
     return (
-      props.records.find(
+      adminRecords.find(
         (item) =>
           item.customerId === selectedCustomerId &&
           (selectedDomain ? item.domain === selectedDomain : true),
       ) ??
-      props.records.find((item) => item.customerId === selectedCustomerId) ??
-      props.records[0]
+      adminRecords.find((item) => item.customerId === selectedCustomerId) ??
+      adminRecords[0]
     );
-  }, [props, selectedCustomerId, selectedDomain]);
+  }, [adminRecords, props, selectedCustomerId, selectedDomain]);
   const reportNotice =
     props.mode === "client"
       ? props.dashboard.reportNotice ?? null
@@ -178,19 +187,19 @@ export function TrafficReportView(props: TrafficReportViewProps) {
 
   const customerOptions =
     props.mode === "admin"
-      ? Array.from(new Map(props.records.map((item) => [item.customerId, item.customerName])).entries())
+      ? Array.from(new Map(adminRecords.map((item) => [item.customerId, item.customerName])).entries())
       : [];
 
   const selectedAdminCustomer =
     props.mode === "admin"
-      ? props.records.find((item) => item.customerId === selectedCustomerId)?.customer ?? null
+      ? adminRecords.find((item) => item.customerId === selectedCustomerId)?.customer ?? null
       : null;
 
   const domainOptions =
     props.mode === "admin"
       ? Array.from(
           new Set(
-            props.records
+            adminRecords
               .filter((item) => !selectedCustomerId || item.customerId === selectedCustomerId)
               .map((item) => item.domain),
           ),
@@ -250,10 +259,10 @@ export function TrafficReportView(props: TrafficReportViewProps) {
     setBrowserTimeZone(detectedTimeZone);
     setBrowserTimeZoneOffsetMinutes(detectedOffsetMinutes);
 
-    if (
+    if (props.mode === "client" && (
       props.filters.timeZone !== detectedTimeZone ||
       props.filters.timeZoneOffsetMinutes !== detectedOffsetMinutes
-    ) {
+    )) {
       replaceParams({
         tz: detectedTimeZone,
         tzOffset: String(detectedOffsetMinutes),
@@ -263,6 +272,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
     filterTimeZone,
     props.filters.timeZone,
     props.filters.timeZoneOffsetMinutes,
+    props.mode,
     replaceParams,
   ]);
 
@@ -289,8 +299,33 @@ export function TrafficReportView(props: TrafficReportViewProps) {
     }
   }, [props.mode, queryType, selectedAdminCustomer, selectedDomain]);
 
+  const regionSummaryLabel = useMemo(() => {
+    if (selectedLocations.length > 0) {
+      if (selectedLocations.length === 1) {
+        return getReportLocationLabel(selectedLocations[0], props.locale);
+      }
+
+      const firstLocation = getReportLocationLabel(selectedLocations[0], props.locale);
+      return `${firstLocation} +${selectedLocations.length - 1}`;
+    }
+
+    if (selectedRegion === "mainland" || selectedRegion === "overseas") {
+      return t.reports.regionOptions[selectedRegion];
+    }
+
+    return t.reports.regionOptions.all;
+  }, [props.locale, selectedLocations, selectedRegion, t.reports]);
+
   if (!report) {
-    return null;
+    return (
+      <Panel title={props.locale === "en" ? "Traffic reports" : "流量报表"}>
+        <p className="text-sm leading-7 text-slate-500">
+          {props.locale === "en"
+            ? "No report data is available yet. Please try again later."
+            : "暂时没有可展示的报表数据，请稍后重试。"}
+        </p>
+      </Panel>
+    );
   }
 
   const selectedRangeLabel =
@@ -315,23 +350,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
     queryType === "traffic"
       ? hasTrafficData || hasTrafficUsageRows
       : hasAudienceData || hasAudienceUsageRows;
-  const isQuerying = isPending || pendingQuery !== null;
-  const regionSummaryLabel = useMemo(() => {
-    if (selectedLocations.length > 0) {
-      if (selectedLocations.length === 1) {
-        return getReportLocationLabel(selectedLocations[0], props.locale);
-      }
-
-      const firstLocation = getReportLocationLabel(selectedLocations[0], props.locale);
-      return `${firstLocation} +${selectedLocations.length - 1}`;
-    }
-
-    if (selectedRegion === "mainland" || selectedRegion === "overseas") {
-      return t.reports.regionOptions[selectedRegion];
-    }
-
-    return t.reports.regionOptions.all;
-  }, [props.locale, selectedLocations, selectedRegion, t.reports]);
+  const isQuerying = props.mode === "admin" ? isLoadingLive : isPending || pendingQuery !== null;
 
   const trafficCards = report.metrics.slice(0, 4);
   const audienceCards = report.metrics.slice(4, 8);
@@ -365,6 +384,75 @@ export function TrafficReportView(props: TrafficReportViewProps) {
     };
 
     return isClientMode ? normalizeClientReportFilters(nextFilters) : nextFilters;
+  }
+
+  function buildAdminReportQuery(filters: ReportFilters) {
+    const params = new URLSearchParams();
+    const entries: Record<string, string | undefined> = {
+      tz: browserTimeZone,
+      tzOffset: String(browserTimeZoneOffsetMinutes),
+      queryType: filters.queryType,
+      range: filters.timeRange,
+      from: filters.timeRange === "custom" ? filters.from : undefined,
+      to: filters.timeRange === "custom" ? filters.to : undefined,
+      area: (filters.queryType ?? "traffic") === "traffic" ? filters.area : undefined,
+      locations:
+        (filters.queryType ?? "traffic") === "traffic" && (filters.locations?.length ?? 0) > 0
+          ? serializeReportLocations(filters.locations ?? [])
+          : undefined,
+      customerId: props.mode === "admin" ? filters.customerId : undefined,
+      domain: filters.domain,
+    };
+
+    Object.entries(entries).forEach(([key, value]) => {
+      if (value) {
+        params.set(key, value);
+      }
+    });
+
+    return params.toString();
+  }
+
+  function fetchLiveReports(queryString: string) {
+    if (props.mode !== "admin") {
+      return;
+    }
+
+    liveRequestRef.current?.abort();
+    const controller = new AbortController();
+    liveRequestRef.current = controller;
+    setHasRequestedLive(true);
+    setIsLoadingLive(true);
+
+    fetch(`/api/dashboard/admin/reports?${queryString}`, {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (response.status === 401) {
+          window.location.assign("/");
+          return;
+        }
+
+        if (!response.ok) {
+          return;
+        }
+
+        const payload = (await response.json()) as { records?: AdminReportRecord[] };
+        if (Array.isArray(payload.records) && !controller.signal.aborted) {
+          setLiveRecords(payload.records);
+        }
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        console.error("Failed to load live admin reports", error);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setIsLoadingLive(false);
+        }
+      });
   }
 
   function renderRegionCell(regionCode: string, regionLabel: string) {
@@ -444,6 +532,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
       customerId: props.mode === "admin" ? selectedCustomerId || undefined : undefined,
       domain: selectedDomain || undefined,
     }, true);
+    fetchLiveReports(buildAdminReportQuery(normalizedFilters));
   }
 
   function applyRegionPreset(nextRegion: Exclude<RegionKey, "custom">) {
@@ -568,7 +657,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
                         onChange={(event) => {
                           const nextCustomerId = event.target.value;
                           const nextCustomer =
-                            props.records.find((item) => item.customerId === nextCustomerId)?.customer ?? null;
+                            adminRecords.find((item) => item.customerId === nextCustomerId)?.customer ?? null;
                           const nextDomain =
                             queryType === "traffic" && (nextCustomer?.domains.length ?? 0) > 1
                               ? ALL_CLIENT_DOMAINS
@@ -739,7 +828,11 @@ export function TrafficReportView(props: TrafficReportViewProps) {
         </div>
       </Panel>
 
-      {isQuerying ? (
+      {props.mode === "admin" && !hasRequestedLive && !isQuerying ? (
+        <div className="rounded-[18px] border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+          {t.reports.queryIdleNotice}
+        </div>
+      ) : isQuerying ? (
         <div className="rounded-[18px] border border-rose-200 bg-gradient-to-r from-rose-50 to-orange-50 px-4 py-3 text-sm text-rose-700 shadow-sm shadow-rose-100">
           <div className="flex items-center gap-2">
             <span className="flex items-center gap-1.5" aria-hidden="true">
@@ -908,7 +1001,7 @@ export function TrafficReportView(props: TrafficReportViewProps) {
           ))}
         </section>
 
-        {!hasCurrentData ? (
+        {!hasCurrentData && (props.mode !== "admin" || hasRequestedLive) && !isQuerying ? (
           <section className="rounded-[24px] border border-dashed border-slate-300 bg-slate-50/70 px-5 py-8 text-center">
             <p className="text-sm font-semibold text-slate-900">{t.reports.noDataTitle}</p>
             <p className="mt-2 text-sm text-slate-500">{t.reports.noDataDescription}</p>

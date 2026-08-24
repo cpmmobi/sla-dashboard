@@ -10,7 +10,16 @@ export async function POST(request: Request) {
   const username = typeof body?.username === "string" ? body.username : "";
   const password = typeof body?.password === "string" ? body.password : "";
 
-  const session = await authenticateAdmin(username, password);
+  let session;
+  try {
+    session = await authenticateAdmin(username, password);
+  } catch (error) {
+    console.error("Admin login failed", error);
+    return NextResponse.json(
+      { message: getApiMessage(locale, "adminLoginUnavailable") },
+      { status: 503 },
+    );
+  }
 
   if (!session) {
     return NextResponse.json(
@@ -28,6 +37,7 @@ export async function POST(request: Request) {
   response.cookies.set("sla_admin_user", session.username, {
     httpOnly: true,
     sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
     path: "/",
   });
 
